@@ -1,49 +1,43 @@
 # -*- coding: utf-8 -*-
 """
-中文评论二分类：RoBERTa + BiLSTM + Attention
-特点：
-1. 适配你的数据列：评论 / lable
-2. 自动尝试多种编码读取CSV，解决中文乱码
-3. 不做全量去重，保留真实重复评论
-4. 按“评论文本”分组切分 train/val/test，避免同文本泄漏到不同集合
-5. 自动移除“同一文本对应多个标签”的冲突样本
-6. 类别不平衡处理：WeightedRandomSampler + FocalLoss
-7. 以少数类（差评类）F1作为模型选择标准
+RoBERTa-BiLSTM-Attention 中文评论二分类
+功能：
+1）使用 huizong_cleaned.csv 训练/验证模型
+2）输出负面评价（差评类）Accuracy 变化图
+3）将 huizong_cleaned 全量数据导入模型做预测
+4）按四个维度统计好评/差评数量与好评率
+5）不删除重复评论；同一评论可对应多个维度
 """
 
 import os
 import re
-import math
 import random
 import warnings
-from collections import Counter
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import matplotlib.pyplot as plt
+
 import torch
 import torch.nn as nn
-from sklearn.metrics import (
-    accuracy_score,
-    precision_recall_fscore_support,
-    classification_report,
-    confusion_matrix
-)
-from sklearn.model_selection import train_test_split
-from sklearn.utils.class_weight import compute_class_weight
 from torch.utils.data import Dataset, DataLoader, WeightedRandomSampler
+
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support, classification_report, confusion_matrix
+from sklearn.utils.class_weight import compute_class_weight
+
 from transformers import AutoTokenizer, AutoModel, get_linear_schedule_with_warmup
 from tqdm.auto import tqdm
 
 warnings.filterwarnings("ignore")
 
-
 # =========================
-# 1. 全局配置
+# 1. 配置
 # =========================
 SEED = 42
 MODEL_NAME = "hfl/chinese-roberta-wwm-ext"
-DATA_PATH = "huizong_cleaned.csv"   # 改成你的文件路径
+DATA_PATH = "huizong_cleaned.csv"
 TEXT_COL = "评论"
 LABEL_COL = "lable"
 
@@ -51,29 +45,45 @@ MAX_LEN = 128
 TRAIN_BATCH_SIZE = 32
 EVAL_BATCH_SIZE = 64
 EPOCHS = 6
-LR = 2e-5
+ENCODER_LR = 1e-5
+HEAD_LR = 2e-4
 WEIGHT_DECAY = 1e-2
-PATIENCE = 2
-NUM_WORKERS = 0  # Windows 下建议 0，更稳
-DROPOUT = 0.3
+DROPOUT = 0.4
 LSTM_HIDDEN = 256
-LSTM_LAYERS = 1
-
-TEST_SIZE = 0.20
-VAL_SIZE_IN_REMAIN = 0.125   # 先切20%测试，再从剩余80%中切12.5%，最终约等于70/10/20
-USE_FOCAL_LOSS = True
+PATIENCE = 2
 FOCAL_GAMMA = 2.0
-
-# 是否保留重复样本：
-# True  = 保留重复评论，但按文本分组切分，防止同文本泄漏
-# False = 先按文本去重后再训练
-KEEP_DUPLICATES = True
-
+MINORITY_CLASS = 0  # 0=差评，1=好评
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+BEST_MODEL_PATH = "best_roberta_bilstm_attn.pt"
+NEG_ACC_FIG_PATH = "negative_accuracy_curve.png"
+ASPECT_RESULT_PATH = "四维度好差评统计.xlsx"
+
+# 维度关键词（按你截图整理，可继续补充）
+ASPECT_KEYWORDS = {
+    "安全性": [
+        "干净", "无菌", "消毒", "卫生", "口罩", "健康", "包扎", "检测", "齐全", "包装",
+        "感染", "规范", "交叉感染", "操作", "耐受", "过敏", "清洁", "防护", "酒精"
+    ],
+    "专业性": [
+        "专业", "手法", "打针", "疼痛", "拆线", "注射", "能力", "询问", "规范", "检查",
+        "护理", "核对", "手术", "娴熟", "采血", "不痛", "扎针", "换药", "伤口", "详细",
+        "检测", "质量", "不准", "采样", "技术"
+    ],
+    "响应性": [
+        "准时", "便捷", "时间", "快速", "准时到达", "方便快捷", "在家", "速度", "上门服务",
+        "行动不便", "预约", "提前", "收到", "过程", "准时", "排队", "物流", "挺快", "快捷",
+        "及时", "效率", "上门", "方便"
+    ],
+    "服务性": [
+        "态度", "耐心", "心细", "放心", "温柔", "细致", "轻柔", "仔细", "礼貌", "亲切",
+        "服务态度", "细心", "讲解", "注意事项", "服务周到", "贴心", "热情", "沟通", "性价比",
+        "体验", "报告", "便宜", "认真负责", "实惠", "安心", "周到", "客服", "服务"
+    ]
+}
 
 # =========================
-# 2. 随机种子
+# 2. 工具函数
 # =========================
 def set_seed(seed=42):
     random.seed(seed)
@@ -82,141 +92,141 @@ def set_seed(seed=42):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
 
-set_seed(SEED)
-
-
-# =========================
-# 3. 读取数据（自动处理编码）
-# =========================
-def load_csv_auto_encoding(path):
+def load_csv_auto(path):
     encodings = ["utf-8", "utf-8-sig", "gbk", "gb18030", "latin1"]
     last_error = None
     for enc in encodings:
         try:
             df = pd.read_csv(path, encoding=enc)
-            print(f"[INFO] 成功使用编码读取数据: {enc}")
-            return df, enc
+            print(f"[INFO] 读取成功，编码={enc}")
+            return df
         except Exception as e:
             last_error = e
-    raise ValueError(f"无法读取CSV，请检查文件编码。最后错误：{last_error}")
+    raise ValueError(f"CSV读取失败: {last_error}")
 
+def clean_text(x):
+    x = str(x).strip()
+    x = re.sub(r"\s+", " ", x)
+    return x
 
-# =========================
-# 4. 文本预处理
-# =========================
-def clean_text(text: str) -> str:
-    """
-    中文任务不要做英文式强清洗，避免破坏语义。
-    这里只做轻量清洗：
-    1. 转字符串
-    2. 去前后空格
-    3. 合并多余空白
-    """
-    text = str(text).strip()
-    text = re.sub(r"\s+", " ", text)
-    return text
+def prepare_dataframe(df):
+    assert TEXT_COL in df.columns, f"缺少列: {TEXT_COL}"
+    assert LABEL_COL in df.columns, f"缺少列: {LABEL_COL}"
 
+    df = df[[TEXT_COL, LABEL_COL]].copy()
+    df = df.dropna(subset=[TEXT_COL, LABEL_COL]).reset_index(drop=True)
+    df[TEXT_COL] = df[TEXT_COL].astype(str).map(clean_text)
+    df[LABEL_COL] = pd.to_numeric(df[LABEL_COL], errors="coerce")
+    df = df.dropna(subset=[LABEL_COL]).reset_index(drop=True)
+    df[LABEL_COL] = df[LABEL_COL].astype(int)
+    df = df[df[LABEL_COL].isin([0, 1])].reset_index(drop=True)
+    df = df[df[TEXT_COL].str.len() > 0].reset_index(drop=True)
 
-# =========================
-# 5. 数据检查与清洗
-# =========================
-def prepare_dataframe(df, text_col, label_col, keep_duplicates=True):
-    assert text_col in df.columns, f"找不到文本列: {text_col}"
-    assert label_col in df.columns, f"找不到标签列: {label_col}"
+    # 删除“同一文本多标签冲突”的样本，避免训练混乱
+    conflict = df.groupby(TEXT_COL)[LABEL_COL].nunique()
+    conflict_texts = conflict[conflict > 1].index.tolist()
+    if conflict_texts:
+        print(f"[WARN] 发现冲突文本 {len(conflict_texts)} 条，已删除")
+        df = df[~df[TEXT_COL].isin(conflict_texts)].reset_index(drop=True)
 
-    df = df[[text_col, label_col]].copy()
-    df = df.dropna(subset=[text_col, label_col]).reset_index(drop=True)
-
-    # 文本清洗
-    df[text_col] = df[text_col].astype(str).apply(clean_text)
-
-    # 标签转int
-    df[label_col] = pd.to_numeric(df[label_col], errors="coerce")
-    df = df.dropna(subset=[label_col]).reset_index(drop=True)
-    df[label_col] = df[label_col].astype(int)
-
-    # 只保留二分类标签 0/1
-    df = df[df[label_col].isin([0, 1])].reset_index(drop=True)
-
-    # 去掉空文本
-    df = df[df[text_col].str.len() > 0].reset_index(drop=True)
-
-    print("\n[INFO] 原始清洗后数据量:", len(df))
-    print("[INFO] 标签分布:\n", df[label_col].value_counts())
-
-    # 找出“同一文本多个标签”的冲突样本
-    nunique_per_text = df.groupby(text_col)[label_col].nunique()
-    conflict_texts = nunique_per_text[nunique_per_text > 1].index.tolist()
-
-    if len(conflict_texts) > 0:
-        print(f"\n[WARN] 发现 {len(conflict_texts)} 条文本存在多标签冲突，已删除这些冲突样本。")
-        df = df[~df[text_col].isin(conflict_texts)].reset_index(drop=True)
-
-    if keep_duplicates:
-        print("\n[INFO] 当前策略：保留重复评论，但按文本分组切分，避免数据泄漏。")
-    else:
-        before = len(df)
-        df = df.drop_duplicates(subset=[text_col]).reset_index(drop=True)
-        print(f"\n[INFO] 当前策略：先去重。删除重复后样本数：{len(df)}（删除了 {before - len(df)} 条）")
-
-    print("\n[INFO] 最终可用数据量:", len(df))
-    print("[INFO] 最终标签分布:\n", df[label_col].value_counts())
+    print(f"[INFO] 样本量: {len(df)}")
+    print(df[LABEL_COL].value_counts())
     return df
 
-
-# =========================
-# 6. 分组切分（关键）
-# =========================
-def grouped_train_val_test_split(df, text_col, label_col, test_size=0.2, val_size_in_remain=0.125, random_state=42):
+def grouped_split(df, test_size=0.2, val_size_in_remain=0.125, random_state=42):
     """
-    核心思想：
-    - 先按文本分组，每个唯一文本只属于一个group
-    - 对group做分层切分
-    - 再映射回原始样本
-    这样保留重复样本，但不会让同文本泄漏到不同集合
+    保留重复评论，但按评论文本分组切分，防止相同文本泄漏到 train/val/test
     """
-    group_df = df.groupby(text_col, as_index=False)[label_col].first()
+    group_df = df.groupby(TEXT_COL, as_index=False)[LABEL_COL].first()
 
     trainval_groups, test_groups = train_test_split(
         group_df,
         test_size=test_size,
-        random_state=random_state,
-        stratify=group_df[label_col]
+        stratify=group_df[LABEL_COL],
+        random_state=random_state
     )
-
     train_groups, val_groups = train_test_split(
         trainval_groups,
         test_size=val_size_in_remain,
-        random_state=random_state,
-        stratify=trainval_groups[label_col]
+        stratify=trainval_groups[LABEL_COL],
+        random_state=random_state
     )
 
-    train_texts = set(train_groups[text_col].tolist())
-    val_texts = set(val_groups[text_col].tolist())
-    test_texts = set(test_groups[text_col].tolist())
+    train_texts = set(train_groups[TEXT_COL])
+    val_texts = set(val_groups[TEXT_COL])
+    test_texts = set(test_groups[TEXT_COL])
 
-    train_df = df[df[text_col].isin(train_texts)].reset_index(drop=True)
-    val_df = df[df[text_col].isin(val_texts)].reset_index(drop=True)
-    test_df = df[df[text_col].isin(test_texts)].reset_index(drop=True)
+    train_df = df[df[TEXT_COL].isin(train_texts)].reset_index(drop=True)
+    val_df = df[df[TEXT_COL].isin(val_texts)].reset_index(drop=True)
+    test_df = df[df[TEXT_COL].isin(test_texts)].reset_index(drop=True)
 
-    # 检查是否泄漏
-    assert len(train_texts & val_texts) == 0
-    assert len(train_texts & test_texts) == 0
-    assert len(val_texts & test_texts) == 0
-
-    print("\n[INFO] 数据集划分结果（按文本分组，无泄漏）")
-    print(f"Train: {len(train_df)}")
-    print(train_df[label_col].value_counts())
-    print(f"\nVal: {len(val_df)}")
-    print(val_df[label_col].value_counts())
-    print(f"\nTest: {len(test_df)}")
-    print(test_df[label_col].value_counts())
-
+    print("\n[INFO] 数据划分：")
+    print("Train:", len(train_df), "\n", train_df[LABEL_COL].value_counts())
+    print("Val  :", len(val_df), "\n", val_df[LABEL_COL].value_counts())
+    print("Test :", len(test_df), "\n", test_df[LABEL_COL].value_counts())
     return train_df, val_df, test_df
 
+def build_weighted_sampler(labels):
+    labels = np.array(labels)
+    class_count = np.bincount(labels)
+    class_weights = 1.0 / class_count
+    sample_weights = class_weights[labels]
+    return WeightedRandomSampler(
+        weights=torch.DoubleTensor(sample_weights),
+        num_samples=len(sample_weights),
+        replacement=True
+    )
+
+def compute_metrics(y_true, y_pred):
+    acc = accuracy_score(y_true, y_pred)
+    p_w, r_w, f1_w, _ = precision_recall_fscore_support(y_true, y_pred, average="weighted", zero_division=0)
+    p_m, r_m, f1_m, _ = precision_recall_fscore_support(y_true, y_pred, average="macro", zero_division=0)
+    p_c, r_c, f1_c, s_c = precision_recall_fscore_support(y_true, y_pred, average=None, labels=[0, 1], zero_division=0)
+    return {
+        "acc": acc,
+        "weighted_f1": f1_w,
+        "macro_f1": f1_m,
+        "minority_precision": p_c[MINORITY_CLASS],
+        "minority_recall": r_c[MINORITY_CLASS],
+        "minority_f1": f1_c[MINORITY_CLASS],
+        "minority_acc": r_c[MINORITY_CLASS],  # 对差评类来说，召回率就是“差评识别准确率”
+        "minority_support": s_c[MINORITY_CLASS]
+    }
+
+def predict_with_threshold(logits, threshold=0.5):
+    probs = torch.softmax(logits, dim=1)
+    neg_probs = probs[:, MINORITY_CLASS]
+    preds = torch.where(
+        neg_probs >= threshold,
+        torch.zeros_like(neg_probs, dtype=torch.long),
+        torch.ones_like(neg_probs, dtype=torch.long)
+    )
+    return preds, neg_probs
+
+def search_best_threshold(y_true, neg_probs, thresholds=np.arange(0.2, 0.81, 0.02)):
+    y_true = np.array(y_true)
+    neg_probs = np.array(neg_probs)
+    best_th, best_f1, best_metrics = 0.5, -1, None
+    for th in thresholds:
+        pred = np.where(neg_probs >= th, 0, 1)
+        metrics = compute_metrics(y_true, pred)
+        if metrics["minority_f1"] > best_f1:
+            best_f1 = metrics["minority_f1"]
+            best_th = float(th)
+            best_metrics = metrics
+    return best_th, best_metrics
+
+def freeze_encoder(encoder, freeze_embeddings=True, freeze_layers=6):
+    if freeze_embeddings and hasattr(encoder, "embeddings"):
+        for p in encoder.embeddings.parameters():
+            p.requires_grad = False
+    if hasattr(encoder, "encoder") and hasattr(encoder.encoder, "layer"):
+        for layer in encoder.encoder.layer[:freeze_layers]:
+            for p in layer.parameters():
+                p.requires_grad = False
 
 # =========================
-# 7. Dataset
+# 3. Dataset
 # =========================
 class ReviewDataset(Dataset):
     def __init__(self, texts, labels, tokenizer, max_len=128):
@@ -229,30 +239,24 @@ class ReviewDataset(Dataset):
         return len(self.labels)
 
     def __getitem__(self, idx):
-        text = str(self.texts[idx])
-        label = int(self.labels[idx])
-
         encoded = self.tokenizer(
-            text,
+            str(self.texts[idx]),
             truncation=True,
             padding="max_length",
             max_length=self.max_len,
             return_tensors="pt"
         )
-
-        item = {
+        return {
             "input_ids": encoded["input_ids"].squeeze(0),
             "attention_mask": encoded["attention_mask"].squeeze(0),
-            "labels": torch.tensor(label, dtype=torch.long)
+            "labels": torch.tensor(int(self.labels[idx]), dtype=torch.long)
         }
-        return item
-
 
 # =========================
-# 8. 模型
+# 4. 模型
 # =========================
-class RobertaBiLSTMAttn(nn.Module):
-    def __init__(self, model_name, num_labels=2, lstm_hidden=256, lstm_layers=1, dropout=0.3):
+class RobertaBiLSTMAttention(nn.Module):
+    def __init__(self, model_name, num_labels=2, lstm_hidden=256, dropout=0.4):
         super().__init__()
         self.encoder = AutoModel.from_pretrained(model_name)
         hidden_size = self.encoder.config.hidden_size
@@ -260,385 +264,369 @@ class RobertaBiLSTMAttn(nn.Module):
         self.lstm = nn.LSTM(
             input_size=hidden_size,
             hidden_size=lstm_hidden,
-            num_layers=lstm_layers,
+            num_layers=1,
             batch_first=True,
-            bidirectional=True,
-            dropout=dropout if lstm_layers > 1 else 0.0
+            bidirectional=True
         )
-
-        self.attn_fc = nn.Linear(lstm_hidden * 2, 1)
-
-        self.classifier = nn.Sequential(
+        self.attn = nn.Linear(lstm_hidden * 2, 1)
+        self.cls = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(lstm_hidden * 2, num_labels)
         )
 
     def forward(self, input_ids, attention_mask):
-        outputs = self.encoder(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            return_dict=True
-        )
-        seq_emb = outputs.last_hidden_state  # [B, L, H]
-
-        lstm_out, _ = self.lstm(seq_emb)     # [B, L, 2H]
-
-        attn_scores = self.attn_fc(lstm_out).squeeze(-1)  # [B, L]
-        attn_scores = attn_scores.masked_fill(attention_mask == 0, -1e9)
-        attn_weights = torch.softmax(attn_scores, dim=1).unsqueeze(-1)  # [B, L, 1]
-
-        pooled = torch.sum(lstm_out * attn_weights, dim=1)  # [B, 2H]
-        logits = self.classifier(pooled)
+        out = self.encoder(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
+        seq = out.last_hidden_state
+        lstm_out, _ = self.lstm(seq)
+        score = self.attn(lstm_out).squeeze(-1)
+        score = score.masked_fill(attention_mask == 0, -1e9)
+        weight = torch.softmax(score, dim=1).unsqueeze(-1)
+        pooled = torch.sum(lstm_out * weight, dim=1)
+        logits = self.cls(pooled)
         return logits
 
-
 # =========================
-# 9. Focal Loss
+# 5. Loss
 # =========================
 class FocalLoss(nn.Module):
-    def __init__(self, alpha=None, gamma=2.0, reduction="mean"):
+    def __init__(self, alpha=None, gamma=2.0):
         super().__init__()
-        self.alpha = alpha
-        self.gamma = gamma
-        self.reduction = reduction
         self.ce = nn.CrossEntropyLoss(weight=alpha, reduction="none")
+        self.gamma = gamma
 
     def forward(self, logits, targets):
-        ce_loss = self.ce(logits, targets)          # [B]
-        pt = torch.exp(-ce_loss)                    # [B]
-        focal_loss = ((1 - pt) ** self.gamma) * ce_loss
-
-        if self.reduction == "mean":
-            return focal_loss.mean()
-        elif self.reduction == "sum":
-            return focal_loss.sum()
-        else:
-            return focal_loss
-
+        ce_loss = self.ce(logits, targets)
+        pt = torch.exp(-ce_loss)
+        loss = ((1 - pt) ** self.gamma) * ce_loss
+        return loss.mean()
 
 # =========================
-# 10. 指标计算
+# 6. 训练与评估
 # =========================
-def compute_metrics(y_true, y_pred):
-    acc = accuracy_score(y_true, y_pred)
-
-    precision_w, recall_w, f1_w, _ = precision_recall_fscore_support(
-        y_true, y_pred, average="weighted", zero_division=0
-    )
-
-    precision_m, recall_m, f1_m, _ = precision_recall_fscore_support(
-        y_true, y_pred, average="macro", zero_division=0
-    )
-
-    # 少数类（默认按你的数据，0是差评少数类）
-    precision_per_class, recall_per_class, f1_per_class, support_per_class = precision_recall_fscore_support(
-        y_true, y_pred, average=None, labels=[0, 1], zero_division=0
-    )
-
-    result = {
-        "acc": acc,
-        "weighted_precision": precision_w,
-        "weighted_recall": recall_w,
-        "weighted_f1": f1_w,
-        "macro_precision": precision_m,
-        "macro_recall": recall_m,
-        "macro_f1": f1_m,
-        "minority_precision": precision_per_class[0],
-        "minority_recall": recall_per_class[0],
-        "minority_f1": f1_per_class[0],
-        "minority_support": support_per_class[0]
-    }
-    return result
-
-
-# =========================
-# 11. 训练与评估
-# =========================
-def train_one_epoch(model, dataloader, optimizer, scheduler, loss_fn, device):
+def train_one_epoch(model, loader, optimizer, scheduler, loss_fn):
     model.train()
-    total_loss = 0.0
-    all_preds = []
-    all_labels = []
+    total_loss = 0
+    y_true, y_pred = [], []
 
-    for batch in tqdm(dataloader, desc="训练中", leave=False):
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-        labels = batch["labels"].to(device)
+    for batch in tqdm(loader, desc="Train", leave=False):
+        input_ids = batch["input_ids"].to(DEVICE)
+        attention_mask = batch["attention_mask"].to(DEVICE)
+        labels = batch["labels"].to(DEVICE)
 
         optimizer.zero_grad()
-
-        logits = model(input_ids=input_ids, attention_mask=attention_mask)
+        logits = model(input_ids, attention_mask)
         loss = loss_fn(logits, labels)
         loss.backward()
-
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
-        if scheduler is not None:
-            scheduler.step()
+        scheduler.step()
 
         total_loss += loss.item() * input_ids.size(0)
+        pred = torch.argmax(logits, dim=1)
 
-        preds = torch.argmax(logits, dim=1).detach().cpu().numpy()
-        all_preds.extend(preds.tolist())
-        all_labels.extend(labels.detach().cpu().numpy().tolist())
+        y_true.extend(labels.detach().cpu().numpy().tolist())
+        y_pred.extend(pred.detach().cpu().numpy().tolist())
 
-    avg_loss = total_loss / len(dataloader.dataset)
-    metrics = compute_metrics(all_labels, all_preds)
-    return avg_loss, metrics
-
+    return total_loss / len(loader.dataset), compute_metrics(y_true, y_pred)
 
 @torch.no_grad()
-def evaluate(model, dataloader, loss_fn, device):
+def evaluate(model, loader, loss_fn, threshold=0.5, return_probs=False):
     model.eval()
-    total_loss = 0.0
-    all_preds = []
-    all_labels = []
+    total_loss = 0
+    y_true, y_pred, neg_probs = [], [], []
 
-    for batch in tqdm(dataloader, desc="评估中", leave=False):
-        input_ids = batch["input_ids"].to(device)
-        attention_mask = batch["attention_mask"].to(device)
-        labels = batch["labels"].to(device)
+    for batch in tqdm(loader, desc="Eval", leave=False):
+        input_ids = batch["input_ids"].to(DEVICE)
+        attention_mask = batch["attention_mask"].to(DEVICE)
+        labels = batch["labels"].to(DEVICE)
 
-        logits = model(input_ids=input_ids, attention_mask=attention_mask)
+        logits = model(input_ids, attention_mask)
         loss = loss_fn(logits, labels)
-
         total_loss += loss.item() * input_ids.size(0)
 
-        preds = torch.argmax(logits, dim=1).detach().cpu().numpy()
-        all_preds.extend(preds.tolist())
-        all_labels.extend(labels.detach().cpu().numpy().tolist())
+        pred, prob = predict_with_threshold(logits, threshold=threshold)
 
-    avg_loss = total_loss / len(dataloader.dataset)
-    metrics = compute_metrics(all_labels, all_preds)
-    return avg_loss, metrics, all_labels, all_preds
+        y_true.extend(labels.detach().cpu().numpy().tolist())
+        y_pred.extend(pred.detach().cpu().numpy().tolist())
+        neg_probs.extend(prob.detach().cpu().numpy().tolist())
 
-
-# =========================
-# 12. 构造WeightedRandomSampler
-# =========================
-def build_weighted_sampler(labels):
-    labels = np.array(labels)
-    class_count = np.bincount(labels)
-    class_weights = 1.0 / class_count
-    sample_weights = class_weights[labels]
-    sample_weights = torch.DoubleTensor(sample_weights)
-
-    sampler = WeightedRandomSampler(
-        weights=sample_weights,
-        num_samples=len(sample_weights),
-        replacement=True
-    )
-    return sampler
-
+    metrics = compute_metrics(y_true, y_pred)
+    if return_probs:
+        return total_loss / len(loader.dataset), metrics, y_true, y_pred, neg_probs
+    return total_loss / len(loader.dataset), metrics, y_true, y_pred
 
 # =========================
-# 13. 主流程
+# 7. 维度匹配与全量预测
+# =========================
+def match_aspects(text, aspect_keywords):
+    hit = []
+    for aspect, keywords in aspect_keywords.items():
+        if any(k in text for k in keywords):
+            hit.append(aspect)
+    return hit
+
+@torch.no_grad()
+def predict_texts(model, tokenizer, texts, threshold=0.5, batch_size=64):
+    model.eval()
+    preds, probs = [], []
+
+    for i in tqdm(range(0, len(texts), batch_size), desc="全量预测", leave=False):
+        batch_texts = texts[i:i + batch_size]
+        encoded = tokenizer(
+            batch_texts,
+            truncation=True,
+            padding=True,
+            max_length=MAX_LEN,
+            return_tensors="pt"
+        )
+        input_ids = encoded["input_ids"].to(DEVICE)
+        attention_mask = encoded["attention_mask"].to(DEVICE)
+
+        logits = model(input_ids, attention_mask)
+        pred, prob = predict_with_threshold(logits, threshold=threshold)
+
+        preds.extend(pred.detach().cpu().numpy().tolist())
+        probs.extend(prob.detach().cpu().numpy().tolist())
+
+    return preds, probs
+
+def build_aspect_table(df_pred, aspect_keywords):
+    """
+    说明：
+    - 每条评论可命中多个维度
+    - 每个维度分别统计该维度下的好评/差评数
+    """
+    records = []
+    for _, row in df_pred.iterrows():
+        text = row[TEXT_COL]
+        pred = row["pred_label"]
+        aspects = match_aspects(text, aspect_keywords)
+        for asp in aspects:
+            records.append({
+                "维度": asp,
+                "情感": "差评" if pred == 0 else "好评"
+            })
+
+    if not records:
+        return pd.DataFrame(columns=["维度", "好评数", "差评数", "总数", "好评率"])
+
+    tmp = pd.DataFrame(records)
+    stat = tmp.groupby(["维度", "情感"]).size().unstack(fill_value=0)
+
+    for col in ["好评", "差评"]:
+        if col not in stat.columns:
+            stat[col] = 0
+
+    stat = stat[["好评", "差评"]].reset_index()
+    stat["总数"] = stat["好评"] + stat["差评"]
+    stat["好评率"] = (stat["好评"] / stat["总数"]).round(4)
+
+    stat = stat.rename(columns={"好评": "好评数", "差评": "差评数"})
+    stat = stat.sort_values("维度").reset_index(drop=True)
+    return stat
+
+def plot_negative_acc_curve(history, save_path):
+    epochs = [x["epoch"] for x in history]
+    train_neg_acc = [x["train_neg_acc"] for x in history]
+    val_neg_acc = [x["val_neg_acc"] for x in history]
+
+    plt.figure(figsize=(8, 5))
+    plt.plot(epochs, train_neg_acc, marker="o", label="Train Negative Accuracy")
+    plt.plot(epochs, val_neg_acc, marker="o", label="Val Negative Accuracy")
+    plt.xlabel("Epoch")
+    plt.ylabel("Negative Accuracy")
+    plt.title("Negative Review Accuracy Curve")
+    plt.legend()
+    plt.grid(True, linestyle="--", alpha=0.4)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=200)
+    plt.close()
+    print(f"[INFO] 已保存差评Accuracy变化图: {save_path}")
+
+# =========================
+# 8. 主函数
 # =========================
 def main():
+    set_seed(SEED)
     print("=" * 80)
-    print("设备:", DEVICE)
+    print("DEVICE:", DEVICE)
     print("=" * 80)
 
     if not Path(DATA_PATH).exists():
         raise FileNotFoundError(f"找不到数据文件: {DATA_PATH}")
 
-    # 读取数据
-    df, used_encoding = load_csv_auto_encoding(DATA_PATH)
+    df = load_csv_auto(DATA_PATH)
+    df = prepare_dataframe(df)
 
-    # 清洗数据
-    df = prepare_dataframe(
-        df=df,
-        text_col=TEXT_COL,
-        label_col=LABEL_COL,
-        keep_duplicates=KEEP_DUPLICATES
-    )
+    train_df, val_df, test_df = grouped_split(df, random_state=SEED)
 
-    # 划分 train / val / test
-    train_df, val_df, test_df = grouped_train_val_test_split(
-        df=df,
-        text_col=TEXT_COL,
-        label_col=LABEL_COL,
-        test_size=TEST_SIZE,
-        val_size_in_remain=VAL_SIZE_IN_REMAIN,
-        random_state=SEED
-    )
-
-    # tokenizer
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True)
 
-    # dataset
-    train_dataset = ReviewDataset(
-        texts=train_df[TEXT_COL].tolist(),
-        labels=train_df[LABEL_COL].tolist(),
-        tokenizer=tokenizer,
-        max_len=MAX_LEN
-    )
-    val_dataset = ReviewDataset(
-        texts=val_df[TEXT_COL].tolist(),
-        labels=val_df[LABEL_COL].tolist(),
-        tokenizer=tokenizer,
-        max_len=MAX_LEN
-    )
-    test_dataset = ReviewDataset(
-        texts=test_df[TEXT_COL].tolist(),
-        labels=test_df[LABEL_COL].tolist(),
-        tokenizer=tokenizer,
-        max_len=MAX_LEN
-    )
+    train_ds = ReviewDataset(train_df[TEXT_COL], train_df[LABEL_COL], tokenizer, MAX_LEN)
+    val_ds = ReviewDataset(val_df[TEXT_COL], val_df[LABEL_COL], tokenizer, MAX_LEN)
+    test_ds = ReviewDataset(test_df[TEXT_COL], test_df[LABEL_COL], tokenizer, MAX_LEN)
 
-    # sampler：只对训练集做
-    train_sampler = build_weighted_sampler(train_df[LABEL_COL].tolist())
-
-    # dataloader
     train_loader = DataLoader(
-        train_dataset,
+        train_ds,
         batch_size=TRAIN_BATCH_SIZE,
-        sampler=train_sampler,
-        num_workers=NUM_WORKERS
+        sampler=build_weighted_sampler(train_df[LABEL_COL].tolist()),
+        num_workers=0
     )
+    val_loader = DataLoader(val_ds, batch_size=EVAL_BATCH_SIZE, shuffle=False, num_workers=0)
+    test_loader = DataLoader(test_ds, batch_size=EVAL_BATCH_SIZE, shuffle=False, num_workers=0)
 
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=EVAL_BATCH_SIZE,
-        shuffle=False,
-        num_workers=NUM_WORKERS
-    )
-
-    test_loader = DataLoader(
-        test_dataset,
-        batch_size=EVAL_BATCH_SIZE,
-        shuffle=False,
-        num_workers=NUM_WORKERS
-    )
-
-    # 模型
-    model = RobertaBiLSTMAttn(
+    model = RobertaBiLSTMAttention(
         model_name=MODEL_NAME,
         num_labels=2,
         lstm_hidden=LSTM_HIDDEN,
-        lstm_layers=LSTM_LAYERS,
         dropout=DROPOUT
     ).to(DEVICE)
 
-    # 只在训练集上计算类权重
+    # 冻结底层，减轻过拟合
+    freeze_encoder(model.encoder, freeze_embeddings=True, freeze_layers=6)
+
+    # 类权重
     y_train = train_df[LABEL_COL].to_numpy()
     classes = np.unique(y_train)
-    class_weights = compute_class_weight(
-        class_weight="balanced",
-        classes=classes,
-        y=y_train
-    )
+    class_weights = compute_class_weight(class_weight="balanced", classes=classes, y=y_train)
     class_weights = torch.tensor(class_weights, dtype=torch.float).to(DEVICE)
-    print("\n[INFO] 训练集 class weights:", class_weights.tolist())
 
-    # loss
-    if USE_FOCAL_LOSS:
-        loss_fn = FocalLoss(alpha=class_weights, gamma=FOCAL_GAMMA)
-        print("[INFO] 当前损失函数: FocalLoss")
-    else:
-        loss_fn = nn.CrossEntropyLoss(weight=class_weights)
-        print("[INFO] 当前损失函数: 加权 CrossEntropyLoss")
+    loss_fn = FocalLoss(alpha=class_weights, gamma=FOCAL_GAMMA)
 
-    # optimizer
+    encoder_params, head_params = [], []
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        if name.startswith("encoder."):
+            encoder_params.append(p)
+        else:
+            head_params.append(p)
+
     optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=LR,
-        weight_decay=WEIGHT_DECAY
+        [
+            {"params": encoder_params, "lr": ENCODER_LR, "weight_decay": WEIGHT_DECAY},
+            {"params": head_params, "lr": HEAD_LR, "weight_decay": WEIGHT_DECAY},
+        ]
     )
 
     total_steps = len(train_loader) * EPOCHS
-    warmup_steps = max(1, int(0.1 * total_steps))
     scheduler = get_linear_schedule_with_warmup(
         optimizer,
-        num_warmup_steps=warmup_steps,
+        num_warmup_steps=max(1, int(0.1 * total_steps)),
         num_training_steps=total_steps
     )
 
     best_metric = -1
     best_epoch = 0
-    patience_counter = 0
-    best_model_path = "best_model_chinese_roberta_bilstm_attn.pt"
+    best_threshold = 0.5
+    patience_count = 0
+    history = []
 
-    # 训练
+    # ========= 训练 =========
     for epoch in range(1, EPOCHS + 1):
-        print("\n" + "=" * 80)
-        print(f"Epoch {epoch}/{EPOCHS}")
-        print("=" * 80)
+        print(f"\n{'=' * 80}\nEpoch {epoch}/{EPOCHS}\n{'=' * 80}")
 
-        train_loss, train_metrics = train_one_epoch(
-            model, train_loader, optimizer, scheduler, loss_fn, DEVICE
+        train_loss, train_metrics = train_one_epoch(model, train_loader, optimizer, scheduler, loss_fn)
+
+        val_loss, _, val_y, _, val_neg_probs = evaluate(
+            model, val_loader, loss_fn, threshold=0.5, return_probs=True
         )
-        val_loss, val_metrics, _, _ = evaluate(
-            model, val_loader, loss_fn, DEVICE
-        )
+        cur_threshold, val_metrics = search_best_threshold(val_y, val_neg_probs)
+
+        history.append({
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "train_neg_acc": train_metrics["minority_acc"],
+            "val_neg_acc": val_metrics["minority_acc"],
+            "train_macro_f1": train_metrics["macro_f1"],
+            "val_macro_f1": val_metrics["macro_f1"],
+            "val_minority_f1": val_metrics["minority_f1"],
+            "best_threshold": cur_threshold
+        })
 
         print(f"[Train] loss={train_loss:.4f} acc={train_metrics['acc']:.4f} "
-              f"macro_f1={train_metrics['macro_f1']:.4f} minority_f1={train_metrics['minority_f1']:.4f}")
+              f"macro_f1={train_metrics['macro_f1']:.4f} neg_acc={train_metrics['minority_acc']:.4f} "
+              f"neg_f1={train_metrics['minority_f1']:.4f}")
 
         print(f"[Val]   loss={val_loss:.4f} acc={val_metrics['acc']:.4f} "
-              f"macro_f1={val_metrics['macro_f1']:.4f} minority_f1={val_metrics['minority_f1']:.4f} "
-              f"minority_recall={val_metrics['minority_recall']:.4f}")
+              f"macro_f1={val_metrics['macro_f1']:.4f} neg_acc={val_metrics['minority_acc']:.4f} "
+              f"neg_f1={val_metrics['minority_f1']:.4f} threshold={cur_threshold:.2f}")
 
-        # 关键：按少数类F1选最好模型
-        current_metric = val_metrics["minority_f1"]
-
-        if current_metric > best_metric:
-            best_metric = current_metric
+        # 以差评F1作为最佳模型标准
+        if val_metrics["minority_f1"] > best_metric:
+            best_metric = val_metrics["minority_f1"]
             best_epoch = epoch
-            patience_counter = 0
+            best_threshold = cur_threshold
+            patience_count = 0
 
             torch.save({
-                "epoch": epoch,
                 "model_state_dict": model.state_dict(),
-                "model_name": MODEL_NAME,
-                "max_len": MAX_LEN,
-                "used_encoding": used_encoding,
-                "keep_duplicates": KEEP_DUPLICATES
-            }, best_model_path)
-
-            print(f"[INFO] 已保存最佳模型到: {best_model_path}")
+                "threshold": best_threshold
+            }, BEST_MODEL_PATH)
+            print(f"[INFO] 已保存最佳模型: {BEST_MODEL_PATH}")
         else:
-            patience_counter += 1
-            print(f"[INFO] 验证集少数类F1未提升，patience = {patience_counter}/{PATIENCE}")
+            patience_count += 1
+            print(f"[INFO] 差评F1未提升 patience={patience_count}/{PATIENCE}")
 
-        if patience_counter >= PATIENCE:
-            print("[INFO] 触发早停。")
+        if patience_count >= PATIENCE:
+            print("[INFO] 提前停止")
             break
 
-    print("\n" + "=" * 80)
-    print(f"训练结束，最佳 epoch = {best_epoch}, 最佳验证集 minority_f1 = {best_metric:.4f}")
-    print("=" * 80)
+    # 画图
+    history_df = pd.DataFrame(history)
+    history_df.to_excel("training_history.xlsx", index=False)
+    plot_negative_acc_curve(history, NEG_ACC_FIG_PATH)
 
-    # 加载最佳模型
-    checkpoint = torch.load(best_model_path, map_location=DEVICE)
-    model.load_state_dict(checkpoint["model_state_dict"])
+    print(f"\n[INFO] 最佳epoch={best_epoch}, 最佳差评F1={best_metric:.4f}, 最佳阈值={best_threshold:.2f}")
 
-    # 测试集评估
+    # ========= 测试 =========
+    ckpt = torch.load(BEST_MODEL_PATH, map_location=DEVICE)
+    model.load_state_dict(ckpt["model_state_dict"])
+    best_threshold = ckpt["threshold"]
+
     test_loss, test_metrics, y_true, y_pred = evaluate(
-        model, test_loader, loss_fn, DEVICE
+        model, test_loader, loss_fn, threshold=best_threshold, return_probs=False
     )
 
-    print("\n" + "=" * 80)
-    print("测试集结果")
-    print("=" * 80)
-    print(f"Test loss           : {test_loss:.4f}")
-    print(f"Test accuracy       : {test_metrics['acc']:.4f}")
-    print(f"Test weighted_f1    : {test_metrics['weighted_f1']:.4f}")
-    print(f"Test macro_f1       : {test_metrics['macro_f1']:.4f}")
-    print(f"Test minority_f1    : {test_metrics['minority_f1']:.4f}")
-    print(f"Test minority_recall: {test_metrics['minority_recall']:.4f}")
-
-    print("\n分类报告（0=差评少数类, 1=多数类）：")
+    print(f"\n{'=' * 80}\n测试集结果\n{'=' * 80}")
+    print(f"Test loss      : {test_loss:.4f}")
+    print(f"Test acc       : {test_metrics['acc']:.4f}")
+    print(f"Test macro_f1  : {test_metrics['macro_f1']:.4f}")
+    print(f"Test neg_acc   : {test_metrics['minority_acc']:.4f}")
+    print(f"Test neg_f1    : {test_metrics['minority_f1']:.4f}")
+    print(f"Best threshold : {best_threshold:.2f}")
+    print("\n分类报告：")
     print(classification_report(y_true, y_pred, digits=4, zero_division=0))
-
     print("混淆矩阵：")
     print(confusion_matrix(y_true, y_pred, labels=[0, 1]))
 
-    print("\n[INFO] 说明：")
-    print("1. 这版代码默认保留重复评论，但按文本分组切分，避免泄漏。")
-    print("2. 如果你想改成先去重再训练，把 KEEP_DUPLICATES = False 即可。")
-    print("3. 对你这种差评少的任务，不要只看 accuracy，重点看 minority_f1 和 minority_recall。")
+    # ========= 全量预测 =========
+    full_df = df.copy()
+    full_preds, full_probs = predict_texts(
+        model=model,
+        tokenizer=tokenizer,
+        texts=full_df[TEXT_COL].tolist(),
+        threshold=best_threshold,
+        batch_size=EVAL_BATCH_SIZE
+    )
+    full_df["pred_label"] = full_preds
+    full_df["pred_prob_neg"] = full_probs
+    full_df["pred_sentiment"] = full_df["pred_label"].map({0: "差评", 1: "好评"})
+    full_df["命中维度"] = full_df[TEXT_COL].apply(lambda x: "、".join(match_aspects(x, ASPECT_KEYWORDS)))
 
+    # ========= 四维度统计 =========
+    aspect_stat = build_aspect_table(full_df, ASPECT_KEYWORDS)
+
+    # 导出
+    with pd.ExcelWriter(ASPECT_RESULT_PATH, engine="openpyxl") as writer:
+        aspect_stat.to_excel(writer, sheet_name="四维度统计", index=False)
+        full_df.to_excel(writer, sheet_name="全量预测结果", index=False)
+        history_df.to_excel(writer, sheet_name="训练历史", index=False)
+
+    print(f"\n[INFO] 四维度统计表已保存: {ASPECT_RESULT_PATH}")
+    print("\n四维度统计结果：")
+    print(aspect_stat)
 
 if __name__ == "__main__":
     main()

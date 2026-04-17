@@ -252,9 +252,7 @@ class ReviewDataset(Dataset):
             "labels": torch.tensor(int(self.labels[idx]), dtype=torch.long)
         }
 
-# =========================
 # 4. 模型
-# =========================
 class RobertaBiLSTMAttention(nn.Module):
     def __init__(self, model_name, num_labels=2, lstm_hidden=256, dropout=0.4):
         super().__init__()
@@ -289,9 +287,7 @@ class RobertaBiLSTMAttention(nn.Module):
         logits = self.cls(pooled)
         return logits
 
-# =========================
 # 5. Loss
-# =========================
 class FocalLoss(nn.Module):
     def __init__(self, alpha=None, gamma=2.0):
         super().__init__()

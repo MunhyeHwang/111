@@ -258,7 +258,11 @@ class ReviewDataset(Dataset):
 class RobertaBiLSTMAttention(nn.Module):
     def __init__(self, model_name, num_labels=2, lstm_hidden=256, dropout=0.4):
         super().__init__()
-        self.encoder = AutoModel.from_pretrained(model_name)
+        self.encoder = AutoModel.from_pretrained(
+            model_name,
+            force_download=True,
+            use_safetensors=False
+        )
         hidden_size = self.encoder.config.hidden_size
 
         self.lstm = nn.LSTM(
@@ -460,7 +464,11 @@ def main():
 
     train_df, val_df, test_df = grouped_split(df, random_state=SEED)
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True)
+    tokenizer = AutoTokenizer.from_pretrained(
+        MODEL_NAME,
+        use_fast=True,
+        force_download=True
+    )
 
     train_ds = ReviewDataset(train_df[TEXT_COL], train_df[LABEL_COL], tokenizer, MAX_LEN)
     val_ds = ReviewDataset(val_df[TEXT_COL], val_df[LABEL_COL], tokenizer, MAX_LEN)

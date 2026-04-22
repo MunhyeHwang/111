@@ -30,6 +30,25 @@ from sklearn.utils.class_weight import compute_class_weight
 from transformers import AutoTokenizer, AutoModel, get_linear_schedule_with_warmup
 from tqdm.auto import tqdm
 
+import matplotlib.font_manager as fm
+
+# 自动选择可用中文字体
+def get_chinese_font():
+    candidates = [
+        "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Source Han Sans SC",
+        "PingFang SC", "WenQuanYi Zen Hei", "Arial Unicode MS"
+    ]
+    available = {f.name for f in fm.fontManager.ttflist}
+    for name in candidates:
+        if name in available:
+            return name
+    return None
+
+CHINESE_FONT = get_chinese_font()
+if CHINESE_FONT:
+    plt.rcParams["font.sans-serif"] = [CHINESE_FONT]
+plt.rcParams["axes.unicode_minus"] = False
+
 warnings.filterwarnings("ignore")
 
 # 1. 配置
@@ -418,6 +437,126 @@ def build_aspect_table(df_pred, aspect_keywords):
     stat = stat.sort_values("维度").reset_index(drop=True)
     return stat
 
+def build_aspect_word_stat(df_pred, aspect_name, aspect_keywords, topn=15):
+    texts = df_pred[
+        df_pred[TEXT_COL].apply(lambda x: aspect_name in match_aspects(x, aspect_keywords))
+    ][TEXT_COL].tolist()
+
+    words = []
+    for text in texts:
+        for kw in aspect_keywords[aspect_name]:
+            cnt = text.count(kw)
+            if cnt > 0:
+                words.extend([kw] * cnt)
+
+    if len(words) == 0:
+        return pd.Series(dtype=int)
+
+    return pd.Series(words).value_counts().head(topn)
+
+def packed_bubble_positions(radii, padding=0.08, max_iter=1200):
+    placed = []
+    if len(radii) == 0:
+        return placed
+
+    placed.append((0.0, 0.0, radii[0]))
+    golden_angle = np.pi * (3 - np.sqrt(5))
+
+    for i in range(1, len(radii)):
+        r = radii[i]
+        found = False
+
+        for t in range(1, max_iter + 1):
+            angle = t * golden_angle
+            dist = 0.15 * np.sqrt(t)
+            x = dist * np.cos(angle)
+            y = dist * np.sin(angle)
+
+            ok = True
+            for px, py, pr in placed:
+                min_dist = r + pr + padding
+                if (x - px) ** 2 + (y - py) ** 2 < min_dist ** 2:
+                    ok = False
+                    break
+
+            if ok:
+                placed.append((x, y, r))
+                found = True
+                break
+
+        if not found:
+            angle = i * golden_angle
+            dist = 0.5 + 0.25 * i
+            x = dist * np.cos(angle)
+            y = dist * np.sin(angle)
+            placed.append((x, y, r))
+
+    return placed
+
+def plot_aspect_wordfreq_bubble(df_pred, aspect_name, aspect_keywords, save_path, topn=15):
+    word_stat = build_aspect_word_stat(df_pred, aspect_name, aspect_keywords, topn=topn)
+
+    labels = word_stat.index.tolist()
+    values = word_stat.values.astype(float)
+
+    order = np.argsort(values)[::-1]
+    labels = [labels[i] for i in order]
+    values = values[order]
+
+    radii = np.sqrt(values)
+    radii = radii / radii.max() * 1.8 + 0.35
+    circles = packed_bubble_positions(radii, padding=0.10, max_iter=2000)
+
+    fig, ax = plt.subplots(figsize=(10, 8))
+    ax.set_aspect("equal")
+    ax.axis("off")
+
+    main_face = "#D9F2E6"
+    main_edge = "#7BC8A4"
+    text_color = "#3A9D6B"
+
+    for (x, y, r), word, freq in zip(circles, labels, values):
+        halo = plt.Circle((x, y), r * 1.12, color=main_edge, alpha=0.08, lw=0)
+        ax.add_patch(halo)
+
+        bubble = plt.Circle((x, y), r, facecolor=main_face, edgecolor=main_edge, linewidth=1.2, alpha=0.85)
+        ax.add_patch(bubble)
+
+        if r >= 1.45:
+            fs = 16
+        elif r >= 1.15:
+            fs = 13
+        elif r >= 0.9:
+            fs = 11
+        else:
+            fs = 9
+
+        show_word = word if len(word) <= 6 else word[:6] + "…"
+
+        ax.text(
+            x, y + 0.10 * r, show_word,
+            ha="center", va="center",
+            fontsize=fs, color=text_color, weight="bold"
+        )
+        ax.text(
+            x, y - 0.18 * r, f"{int(freq)}",
+            ha="center", va="center",
+            fontsize=max(fs - 2, 8), color=text_color
+        )
+
+    xmin = min(x - r for (x, y, r) in circles) - 0.4
+    xmax = max(x + r for (x, y, r) in circles) + 0.4
+    ymin = min(y - r for (x, y, r) in circles) - 0.4
+    ymax = max(y + r for (x, y, r) in circles) + 0.4
+
+    ax.set_xlim(xmin, xmax)
+    ax.set_ylim(ymin, ymax)
+
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=300, bbox_inches="tight", facecolor="white")
+    plt.close()
+    print(f"[INFO] 已保存{aspect_name}词频气泡图: {save_path}")
+
 def plot_negative_acc_curve(history, save_path):
     epochs = [x["epoch"] for x in history]
     train_neg_acc = [x["train_neg_acc"] for x in history]
@@ -457,42 +596,6 @@ def plot_aspect_sentiment_bar(aspect_stat, save_path):
     plt.savefig(save_path, dpi=200, bbox_inches="tight")
     plt.close()
     print(f"[INFO] 已保存四维度好评差评柱状图: {save_path}")
-def plot_aspect_wordfreq_bubble(df_pred, aspect_name, aspect_keywords, save_path, topn=15):
-    texts = df_pred[
-        df_pred[TEXT_COL].apply(lambda x: aspect_name in match_aspects(x, aspect_keywords))
-    ][TEXT_COL].tolist()
-
-    words = []
-    for text in texts:
-        for kw in aspect_keywords[aspect_name]:
-            cnt = text.count(kw)
-            if cnt > 0:
-                words.extend([kw] * cnt)
-
-    if len(words) == 0:
-        print(f"[WARN] {aspect_name} 没有匹配到关键词，未生成气泡图")
-        return
-
-    word_stat = pd.Series(words).value_counts().head(topn)
-
-    x = np.arange(len(word_stat))
-    y = word_stat.values
-    sizes = y * 250  # 控制气泡大小，可调
-
-    plt.figure(figsize=(12, 7))
-    plt.scatter(x, y, s=sizes, alpha=0.6)
-
-    for i, (word, freq) in enumerate(zip(word_stat.index, word_stat.values)):
-        plt.text(i, freq, word, ha="center", va="center", fontsize=10)
-
-    plt.xticks(x, word_stat.index, rotation=45, ha="right")
-    plt.ylabel("词频")
-    plt.title(f"{aspect_name}词频气泡图")
-    plt.grid(axis="y", linestyle="--", alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=200, bbox_inches="tight")
-    plt.close()
-    print(f"[INFO] 已保存{aspect_name}词频气泡图: {save_path}")
 
 # 8. 主函数
 def main():

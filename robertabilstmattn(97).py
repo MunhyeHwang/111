@@ -35,18 +35,10 @@ import matplotlib.pyplot as plt
 from matplotlib.font_manager import FontProperties
 import os
 
-# ===== 手动加载中文字体（推荐方式）=====
+# 手动加载中文字体
 font_path = "./simhei.ttf"
-
-if not os.path.exists(font_path):
-    raise FileNotFoundError(f"找不到字体文件: {font_path}")
-
 CN_FONT = FontProperties(fname=font_path)
-
-plt.rcParams["font.family"] = CN_FONT.get_name()
-plt.rcParams["font.sans-serif"] = [CN_FONT.get_name()]
 plt.rcParams["axes.unicode_minus"] = False
-
 print(f"[INFO] 已加载字体: {font_path}")
 
 warnings.filterwarnings("ignore")
@@ -511,9 +503,9 @@ def plot_aspect_wordfreq_bubble(df_pred, aspect_name, aspect_keywords, save_path
     ax.set_aspect("equal")
     ax.axis("off")
 
-    main_face = "#D9F2E6"
-    main_edge = "#7BC8A4"
-    text_color = "#3A9D6B"
+    main_face = "#C6E6E9"
+    main_edge = "#85CCCD"
+    text_color = "#24B6B6"
 
     for (x, y, r), word, freq in zip(circles, labels, values):
         halo = plt.Circle((x, y), r * 1.12, color=main_edge, alpha=0.08, lw=0)
@@ -539,12 +531,6 @@ def plot_aspect_wordfreq_bubble(df_pred, aspect_name, aspect_keywords, save_path
             fontsize=fs, color=text_color, weight="bold",
             fontproperties = CN_FONT
         )
-        ax.text(
-            x, y - 0.18 * r, f"{int(freq)}",
-            ha="center", va="center",
-            fontsize=max(fs - 2, 8), color=text_color,
-            fontproperties=CN_FONT
-        )
 
     xmin = min(x - r for (x, y, r) in circles) - 0.4
     xmax = max(x + r for (x, y, r) in circles) + 0.4
@@ -565,8 +551,8 @@ def plot_negative_acc_curve(history, save_path):
     val_neg_acc = [x["val_neg_acc"] for x in history]
 
     plt.figure(figsize=(8, 5))
-    plt.plot(epochs, train_neg_acc, marker="o", label="Train Negative Accuracy")
-    plt.plot(epochs, val_neg_acc, marker="o", label="Val Negative Accuracy")
+    plt.plot(epochs, train_neg_acc, marker="o", label="Train Negative Accuracy",color="#85CCCD")
+    plt.plot(epochs, val_neg_acc, marker="o", label="Val Negative Accuracy",color="#87B814")
     plt.xlabel("Epoch")
     plt.ylabel("Negative Accuracy")
     plt.legend()
@@ -577,16 +563,12 @@ def plot_negative_acc_curve(history, save_path):
     print(f"[INFO] 已保存差评Accuracy变化图: {save_path}")
 
 def plot_aspect_sentiment_bar(aspect_stat, save_path):
-    if aspect_stat.empty:
-        print("[WARN] 四维度统计为空，未生成柱状图")
-        return
-
     plt.figure(figsize=(10, 6))
     x = np.arange(len(aspect_stat))
     width = 0.35
 
-    plt.bar(x - width / 2, aspect_stat["好评数"], width=width, label="好评数")
-    plt.bar(x + width / 2, aspect_stat["差评数"], width=width, label="差评数")
+    plt.bar(x - width / 2, aspect_stat["好评数"], width=width, label="好评数",color="#85CCCD")
+    plt.bar(x + width / 2, aspect_stat["差评数"], width=width, label="差评数",color="#24B6B6")
 
     plt.xticks(x, aspect_stat["维度"], fontproperties=CN_FONT)
     plt.ylabel("数量",fontproperties=CN_FONT)

@@ -31,23 +31,23 @@ from transformers import AutoTokenizer, AutoModel, get_linear_schedule_with_warm
 from tqdm.auto import tqdm
 
 import matplotlib.font_manager as fm
+import matplotlib.pyplot as plt
+from matplotlib.font_manager import FontProperties
+import os
 
-# 自动选择可用中文字体
-def get_chinese_font():
-    candidates = [
-        "Microsoft YaHei", "SimHei", "Noto Sans CJK SC", "Source Han Sans SC",
-        "PingFang SC", "WenQuanYi Zen Hei", "Arial Unicode MS"
-    ]
-    available = {f.name for f in fm.fontManager.ttflist}
-    for name in candidates:
-        if name in available:
-            return name
-    return None
+# ===== 手动加载中文字体（推荐方式）=====
+font_path = "./simhei.ttf"
 
-CHINESE_FONT = get_chinese_font()
-if CHINESE_FONT:
-    plt.rcParams["font.sans-serif"] = [CHINESE_FONT]
+if not os.path.exists(font_path):
+    raise FileNotFoundError(f"找不到字体文件: {font_path}")
+
+CN_FONT = FontProperties(fname=font_path)
+
+plt.rcParams["font.family"] = CN_FONT.get_name()
+plt.rcParams["font.sans-serif"] = [CN_FONT.get_name()]
 plt.rcParams["axes.unicode_minus"] = False
+
+print(f"[INFO] 已加载字体: {font_path}")
 
 warnings.filterwarnings("ignore")
 
@@ -536,12 +536,14 @@ def plot_aspect_wordfreq_bubble(df_pred, aspect_name, aspect_keywords, save_path
         ax.text(
             x, y + 0.10 * r, show_word,
             ha="center", va="center",
-            fontsize=fs, color=text_color, weight="bold"
+            fontsize=fs, color=text_color, weight="bold",
+            fontproperties = CN_FONT
         )
         ax.text(
             x, y - 0.18 * r, f"{int(freq)}",
             ha="center", va="center",
-            fontsize=max(fs - 2, 8), color=text_color
+            fontsize=max(fs - 2, 8), color=text_color,
+            fontproperties=CN_FONT
         )
 
     xmin = min(x - r for (x, y, r) in circles) - 0.4
@@ -567,7 +569,6 @@ def plot_negative_acc_curve(history, save_path):
     plt.plot(epochs, val_neg_acc, marker="o", label="Val Negative Accuracy")
     plt.xlabel("Epoch")
     plt.ylabel("Negative Accuracy")
-    plt.title("Negative Review Accuracy Curve")
     plt.legend()
     plt.grid(True, linestyle="--", alpha=0.4)
     plt.tight_layout()
@@ -587,10 +588,9 @@ def plot_aspect_sentiment_bar(aspect_stat, save_path):
     plt.bar(x - width / 2, aspect_stat["好评数"], width=width, label="好评数")
     plt.bar(x + width / 2, aspect_stat["差评数"], width=width, label="差评数")
 
-    plt.xticks(x, aspect_stat["维度"], fontsize=11)
-    plt.ylabel("数量")
-    plt.title("四个维度好评/差评柱状图")
-    plt.legend()
+    plt.xticks(x, aspect_stat["维度"], fontproperties=CN_FONT)
+    plt.ylabel("数量",fontproperties=CN_FONT)
+    plt.legend(prop=CN_FONT)
     plt.grid(axis="y", linestyle="--", alpha=0.3)
     plt.tight_layout()
     plt.savefig(save_path, dpi=200, bbox_inches="tight")

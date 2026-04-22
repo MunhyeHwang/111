@@ -57,8 +57,8 @@ BEST_MODEL_PATH = "best_roberta_bilstm_attn.pt"
 NEG_ACC_FIG_PATH = "差评准确率变化曲线.png"
 ASPECT_RESULT_PATH = "四维度好差评统计.xlsx"
 ASPECT_BAR_FIG_PATH = "四维度好评差评柱状图.png"
-PROF_WORDCLOUD_FIG_PATH = "专业性词频统计图.png"
-SAFE_WORDCLOUD_FIG_PATH = "安全性词频统计图.png"
+PROF_WORDCLOUD_FIG_PATH = "专业性词频气泡图.png"
+SAFE_WORDCLOUD_FIG_PATH = "安全性词频气泡图.png"
 
 # 维度关键词（按你截图整理，可继续补充）
 ASPECT_KEYWORDS = {
@@ -419,48 +419,6 @@ def build_aspect_table(df_pred, aspect_keywords):
     return stat
 
 def plot_negative_acc_curve(history, save_path):
-    def plot_aspect_sentiment_bar(aspect_stat, save_path):
-
-        plt.figure(figsize=(10, 6))
-        x = np.arange(len(aspect_stat))
-        width = 0.35
-
-        plt.bar(x - width / 2, aspect_stat["好评数"], width=width, label="好评数")
-        plt.bar(x + width / 2, aspect_stat["差评数"], width=width, label="差评数")
-
-        plt.xticks(x, aspect_stat["维度"], fontsize=11)
-        plt.ylabel("数量")
-        plt.title("四个维度好评/差评柱状图")
-        plt.legend()
-        plt.grid(axis="y", linestyle="--", alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=200)
-        plt.close()
-        print(f"[INFO] 已保存四维度好评差评柱状图: {save_path}")
-    def plot_aspect_wordfreq(df_pred, aspect_name, aspect_keywords, save_path, topn=15):
-        texts = df_pred[df_pred[TEXT_COL].apply(lambda x: aspect_name in match_aspects(x, aspect_keywords))][
-            TEXT_COL].tolist()
-
-        words = []
-        for text in texts:
-            for kw in aspect_keywords[aspect_name]:
-                cnt = text.count(kw)
-                if cnt > 0:
-                    words.extend([kw] * cnt)
-
-        word_stat = pd.Series(words).value_counts().head(topn)
-
-        plt.figure(figsize=(10, 6))
-        plt.bar(word_stat.index, word_stat.values)
-        plt.xticks(rotation=45, ha="right")
-        plt.ylabel("词频")
-        plt.title(f"{aspect_name}词频统计图")
-        plt.grid(axis="y", linestyle="--", alpha=0.3)
-        plt.tight_layout()
-        plt.savefig(save_path, dpi=200)
-        plt.close()
-        print(f"[INFO] 已保存{aspect_name}词频统计图: {save_path}")
-
     epochs = [x["epoch"] for x in history]
     train_neg_acc = [x["train_neg_acc"] for x in history]
     val_neg_acc = [x["val_neg_acc"] for x in history]
@@ -477,6 +435,64 @@ def plot_negative_acc_curve(history, save_path):
     plt.savefig(save_path, dpi=200)
     plt.close()
     print(f"[INFO] 已保存差评Accuracy变化图: {save_path}")
+
+def plot_aspect_sentiment_bar(aspect_stat, save_path):
+    if aspect_stat.empty:
+        print("[WARN] 四维度统计为空，未生成柱状图")
+        return
+
+    plt.figure(figsize=(10, 6))
+    x = np.arange(len(aspect_stat))
+    width = 0.35
+
+    plt.bar(x - width / 2, aspect_stat["好评数"], width=width, label="好评数")
+    plt.bar(x + width / 2, aspect_stat["差评数"], width=width, label="差评数")
+
+    plt.xticks(x, aspect_stat["维度"], fontsize=11)
+    plt.ylabel("数量")
+    plt.title("四个维度好评/差评柱状图")
+    plt.legend()
+    plt.grid(axis="y", linestyle="--", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=200, bbox_inches="tight")
+    plt.close()
+    print(f"[INFO] 已保存四维度好评差评柱状图: {save_path}")
+def plot_aspect_wordfreq_bubble(df_pred, aspect_name, aspect_keywords, save_path, topn=15):
+    texts = df_pred[
+        df_pred[TEXT_COL].apply(lambda x: aspect_name in match_aspects(x, aspect_keywords))
+    ][TEXT_COL].tolist()
+
+    words = []
+    for text in texts:
+        for kw in aspect_keywords[aspect_name]:
+            cnt = text.count(kw)
+            if cnt > 0:
+                words.extend([kw] * cnt)
+
+    if len(words) == 0:
+        print(f"[WARN] {aspect_name} 没有匹配到关键词，未生成气泡图")
+        return
+
+    word_stat = pd.Series(words).value_counts().head(topn)
+
+    x = np.arange(len(word_stat))
+    y = word_stat.values
+    sizes = y * 250  # 控制气泡大小，可调
+
+    plt.figure(figsize=(12, 7))
+    plt.scatter(x, y, s=sizes, alpha=0.6)
+
+    for i, (word, freq) in enumerate(zip(word_stat.index, word_stat.values)):
+        plt.text(i, freq, word, ha="center", va="center", fontsize=10)
+
+    plt.xticks(x, word_stat.index, rotation=45, ha="right")
+    plt.ylabel("词频")
+    plt.title(f"{aspect_name}词频气泡图")
+    plt.grid(axis="y", linestyle="--", alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=200, bbox_inches="tight")
+    plt.close()
+    print(f"[INFO] 已保存{aspect_name}词频气泡图: {save_path}")
 
 # 8. 主函数
 def main():
@@ -656,8 +672,8 @@ def main():
     aspect_stat = build_aspect_table(full_df, ASPECT_KEYWORDS)
     # 生成图表
     plot_aspect_sentiment_bar(aspect_stat, ASPECT_BAR_FIG_PATH)
-    plot_aspect_wordfreq(full_df, "专业性", ASPECT_KEYWORDS, PROF_WORDCLOUD_FIG_PATH)
-    plot_aspect_wordfreq(full_df, "安全性", ASPECT_KEYWORDS, SAFE_WORDCLOUD_FIG_PATH)
+    plot_aspect_wordfreq_bubble(full_df, "专业性", ASPECT_KEYWORDS, PROF_WORDCLOUD_FIG_PATH)
+    plot_aspect_wordfreq_bubble(full_df, "安全性", ASPECT_KEYWORDS, SAFE_WORDCLOUD_FIG_PATH)
 
     # 导出
     with pd.ExcelWriter(ASPECT_RESULT_PATH, engine="openpyxl") as writer:

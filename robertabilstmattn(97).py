@@ -32,9 +32,7 @@ from tqdm.auto import tqdm
 
 warnings.filterwarnings("ignore")
 
-# =========================
 # 1. 配置
-# =========================
 SEED = 42
 MODEL_NAME = "hfl/chinese-roberta-wwm-ext"
 DATA_PATH = "huizong_cleaned.csv"
@@ -56,8 +54,11 @@ MINORITY_CLASS = 0  # 0=差评，1=好评
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 BEST_MODEL_PATH = "best_roberta_bilstm_attn.pt"
-NEG_ACC_FIG_PATH = "negative_accuracy_curve.png"
+NEG_ACC_FIG_PATH = "差评准确率变化曲线.png"
 ASPECT_RESULT_PATH = "四维度好差评统计.xlsx"
+ASPECT_BAR_FIG_PATH = "四维度好评差评柱状图.png"
+PROF_WORDCLOUD_FIG_PATH = "专业性词频统计图.png"
+SAFE_WORDCLOUD_FIG_PATH = "安全性词频统计图.png"
 
 # 维度关键词（按你截图整理，可继续补充）
 ASPECT_KEYWORDS = {
@@ -82,9 +83,7 @@ ASPECT_KEYWORDS = {
     ]
 }
 
-# =========================
 # 2. 工具函数
-# =========================
 def set_seed(seed=42):
     random.seed(seed)
     np.random.seed(seed)
@@ -225,9 +224,7 @@ def freeze_encoder(encoder, freeze_embeddings=True, freeze_layers=6):
             for p in layer.parameters():
                 p.requires_grad = False
 
-# =========================
 # 3. Dataset
-# =========================
 class ReviewDataset(Dataset):
     def __init__(self, texts, labels, tokenizer, max_len=128):
         self.texts = list(texts)
@@ -300,9 +297,7 @@ class FocalLoss(nn.Module):
         loss = ((1 - pt) ** self.gamma) * ce_loss
         return loss.mean()
 
-# =========================
 # 6. 训练与评估
-# =========================
 def train_one_epoch(model, loader, optimizer, scheduler, loss_fn):
     model.train()
     total_loss = 0
@@ -355,9 +350,7 @@ def evaluate(model, loader, loss_fn, threshold=0.5, return_probs=False):
         return total_loss / len(loader.dataset), metrics, y_true, y_pred, neg_probs
     return total_loss / len(loader.dataset), metrics, y_true, y_pred
 
-# =========================
 # 7. 维度匹配与全量预测
-# =========================
 def match_aspects(text, aspect_keywords):
     hit = []
     for aspect, keywords in aspect_keywords.items():
@@ -426,6 +419,48 @@ def build_aspect_table(df_pred, aspect_keywords):
     return stat
 
 def plot_negative_acc_curve(history, save_path):
+    def plot_aspect_sentiment_bar(aspect_stat, save_path):
+
+        plt.figure(figsize=(10, 6))
+        x = np.arange(len(aspect_stat))
+        width = 0.35
+
+        plt.bar(x - width / 2, aspect_stat["好评数"], width=width, label="好评数")
+        plt.bar(x + width / 2, aspect_stat["差评数"], width=width, label="差评数")
+
+        plt.xticks(x, aspect_stat["维度"], fontsize=11)
+        plt.ylabel("数量")
+        plt.title("四个维度好评/差评柱状图")
+        plt.legend()
+        plt.grid(axis="y", linestyle="--", alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=200)
+        plt.close()
+        print(f"[INFO] 已保存四维度好评差评柱状图: {save_path}")
+    def plot_aspect_wordfreq(df_pred, aspect_name, aspect_keywords, save_path, topn=15):
+        texts = df_pred[df_pred[TEXT_COL].apply(lambda x: aspect_name in match_aspects(x, aspect_keywords))][
+            TEXT_COL].tolist()
+
+        words = []
+        for text in texts:
+            for kw in aspect_keywords[aspect_name]:
+                cnt = text.count(kw)
+                if cnt > 0:
+                    words.extend([kw] * cnt)
+
+        word_stat = pd.Series(words).value_counts().head(topn)
+
+        plt.figure(figsize=(10, 6))
+        plt.bar(word_stat.index, word_stat.values)
+        plt.xticks(rotation=45, ha="right")
+        plt.ylabel("词频")
+        plt.title(f"{aspect_name}词频统计图")
+        plt.grid(axis="y", linestyle="--", alpha=0.3)
+        plt.tight_layout()
+        plt.savefig(save_path, dpi=200)
+        plt.close()
+        print(f"[INFO] 已保存{aspect_name}词频统计图: {save_path}")
+
     epochs = [x["epoch"] for x in history]
     train_neg_acc = [x["train_neg_acc"] for x in history]
     val_neg_acc = [x["val_neg_acc"] for x in history]
@@ -443,9 +478,7 @@ def plot_negative_acc_curve(history, save_path):
     plt.close()
     print(f"[INFO] 已保存差评Accuracy变化图: {save_path}")
 
-# =========================
 # 8. 主函数
-# =========================
 def main():
     set_seed(SEED)
     print("=" * 80)
@@ -526,7 +559,7 @@ def main():
     patience_count = 0
     history = []
 
-    # ========= 训练 =========
+    # 训练
     for epoch in range(1, EPOCHS + 1):
         print(f"\n{'=' * 80}\nEpoch {epoch}/{EPOCHS}\n{'=' * 80}")
 
@@ -584,7 +617,7 @@ def main():
 
     print(f"\n[INFO] 最佳epoch={best_epoch}, 最佳差评F1={best_metric:.4f}, 最佳阈值={best_threshold:.2f}")
 
-    # ========= 测试 =========
+    # 测试
     ckpt = torch.load(BEST_MODEL_PATH, map_location=DEVICE)
     model.load_state_dict(ckpt["model_state_dict"])
     best_threshold = ckpt["threshold"]
@@ -605,7 +638,7 @@ def main():
     print("混淆矩阵：")
     print(confusion_matrix(y_true, y_pred, labels=[0, 1]))
 
-    # ========= 全量预测 =========
+    # 全量预测
     full_df = df.copy()
     full_preds, full_probs = predict_texts(
         model=model,
@@ -619,8 +652,12 @@ def main():
     full_df["pred_sentiment"] = full_df["pred_label"].map({0: "差评", 1: "好评"})
     full_df["命中维度"] = full_df[TEXT_COL].apply(lambda x: "、".join(match_aspects(x, ASPECT_KEYWORDS)))
 
-    # ========= 四维度统计 =========
+    # 四维度统计
     aspect_stat = build_aspect_table(full_df, ASPECT_KEYWORDS)
+    # 生成图表
+    plot_aspect_sentiment_bar(aspect_stat, ASPECT_BAR_FIG_PATH)
+    plot_aspect_wordfreq(full_df, "专业性", ASPECT_KEYWORDS, PROF_WORDCLOUD_FIG_PATH)
+    plot_aspect_wordfreq(full_df, "安全性", ASPECT_KEYWORDS, SAFE_WORDCLOUD_FIG_PATH)
 
     # 导出
     with pd.ExcelWriter(ASPECT_RESULT_PATH, engine="openpyxl") as writer:

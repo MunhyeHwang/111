@@ -57,8 +57,8 @@ EPOCHS = 6
 ENCODER_LR = 1e-5
 HEAD_LR = 2e-4
 WEIGHT_DECAY = 1e-2
-DROPOUT = 0.4
-LSTM_HIDDEN = 256
+DROPOUT = 0.5
+LSTM_HIDDEN = 128
 PATIENCE = 2
 FOCAL_GAMMA = 2.0
 MINORITY_CLASS = 0  # 0=差评，1=好评
@@ -226,7 +226,7 @@ def search_best_threshold(y_true, neg_probs, thresholds=np.arange(0.2, 0.81, 0.0
             best_metrics = metrics
     return best_th, best_metrics
 
-def freeze_encoder(encoder, freeze_embeddings=True, freeze_layers=6):
+def freeze_encoder(encoder, freeze_embeddings=True, freeze_layers=8):
     if freeze_embeddings and hasattr(encoder, "embeddings"):
         for p in encoder.embeddings.parameters():
             p.requires_grad = False

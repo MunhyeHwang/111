@@ -496,37 +496,62 @@ def plot_aspect_wordfreq_bubble(df_pred, aspect_name, aspect_keywords, save_path
     values = values[order]
 
     radii = np.sqrt(values)
-    radii = radii / radii.max() * 1.8 + 0.35
+    radii = radii / radii.max() * 2.2 + 0.4
     circles = packed_bubble_positions(radii, padding=0.10, max_iter=2000)
 
-    fig, ax = plt.subplots(figsize=(10, 8))
+    fig, ax = plt.subplots(figsize=(14, 6))
     ax.set_aspect("equal")
     ax.axis("off")
-
-    main_face = "#C6E6E9"
-    main_edge = "#85CCCD"
-    text_color = "#24B6B6"
+    def get_color_by_radius(r):
+        """根据气泡半径返回对应颜色"""
+        if r >= 1.45:
+            face = "#24B6B6"
+            edge = "#1A8A8A"
+            text = "#FFFFFF"
+        elif r >= 1.15:
+            face = "#6BCACA"
+            edge = "#4DA8A8"
+            text = "#FFFFFF"
+        elif r >= 0.9:
+            face = "#A8E0E0"
+            edge = "#85CCCD"
+            text = "#1A6B6B"
+        else:
+            face = "#E8F5F5"
+            edge = "#B8D8D8"
+            text = "#2E8B8B"
+        return face, edge, text
 
     for (x, y, r), word, freq in zip(circles, labels, values):
-        halo = plt.Circle((x, y), r * 1.12, color=main_edge, alpha=0.08, lw=0)
+        face_color, edge_color, text_color = get_color_by_radius(r)
+
+        # 光晕效果
+        halo = plt.Circle((x, y), r * 1.12, color=edge_color, alpha=0.08, lw=0)
         ax.add_patch(halo)
 
-        bubble = plt.Circle((x, y), r, facecolor=main_face, edgecolor=main_edge, linewidth=1.2, alpha=0.85)
+        # 气泡本体
+        bubble = plt.Circle(
+            (x, y), r,
+            facecolor=face_color,
+            edgecolor=edge_color,
+            linewidth=1.5,
+            alpha=0.9
+        )
         ax.add_patch(bubble)
 
         if r >= 1.45:
-            fs = 16
+            fs = 24
         elif r >= 1.15:
-            fs = 13
+            fs = 20
         elif r >= 0.9:
-            fs = 11
+            fs = 16
         else:
-            fs = 9
+            fs = 13
 
         show_word = word if len(word) <= 6 else word[:6] + "…"
 
         ax.text(
-            x, y + 0.10 * r, show_word,
+            x, y, show_word,
             ha="center", va="center",
             fontsize=fs, color=text_color, weight="bold",
             fontproperties = CN_FONT

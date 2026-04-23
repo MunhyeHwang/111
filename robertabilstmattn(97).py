@@ -56,9 +56,9 @@ EVAL_BATCH_SIZE = 64
 EPOCHS = 6
 ENCODER_LR = 1e-5
 HEAD_LR = 2e-4
-WEIGHT_DECAY = 1e-2
-DROPOUT = 0.45
-LSTM_HIDDEN = 192
+WEIGHT_DECAY = 1.2e-2
+DROPOUT = 0.42
+LSTM_HIDDEN = 256
 PATIENCE = 2
 FOCAL_GAMMA = 2.0
 MINORITY_CLASS = 0  # 0=差评，1=好评
@@ -646,7 +646,7 @@ def main():
     ).to(DEVICE)
 
     # 冻结底层，减轻过拟合
-    freeze_encoder(model.encoder, freeze_embeddings=True, freeze_layers=6)
+    freeze_encoder(model.encoder, freeze_embeddings=True, freeze_layers=7)
 
     # 类权重
     y_train = train_df[LABEL_COL].to_numpy()

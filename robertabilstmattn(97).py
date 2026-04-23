@@ -56,11 +56,11 @@ EVAL_BATCH_SIZE = 64
 EPOCHS = 6
 ENCODER_LR = 1e-5
 HEAD_LR = 2e-4
-WEIGHT_DECAY = 1.2e-2
-DROPOUT = 0.42
+WEIGHT_DECAY = 1e-2
+DROPOUT = 0.43
 LSTM_HIDDEN = 256
 PATIENCE = 2
-FOCAL_GAMMA = 2.0
+FOCAL_GAMMA = 1.5
 MINORITY_CLASS = 0  # 0=差评，1=好评
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -226,7 +226,7 @@ def search_best_threshold(y_true, neg_probs, thresholds=np.arange(0.2, 0.81, 0.0
             best_metrics = metrics
     return best_th, best_metrics
 
-def freeze_encoder(encoder, freeze_embeddings=True, freeze_layers=7):
+def freeze_encoder(encoder, freeze_embeddings=True, freeze_layers=6):
     if freeze_embeddings and hasattr(encoder, "embeddings"):
         for p in encoder.embeddings.parameters():
             p.requires_grad = False
@@ -646,7 +646,7 @@ def main():
     ).to(DEVICE)
 
     # 冻结底层，减轻过拟合
-    freeze_encoder(model.encoder, freeze_embeddings=True, freeze_layers=7)
+    freeze_encoder(model.encoder, freeze_embeddings=True, freeze_layers=6)
 
     # 类权重
     y_train = train_df[LABEL_COL].to_numpy()

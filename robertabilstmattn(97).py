@@ -55,10 +55,10 @@ TRAIN_BATCH_SIZE = 32
 EVAL_BATCH_SIZE = 64
 EPOCHS = 6
 ENCODER_LR = 1e-5
-HEAD_LR = 2e-4
-WEIGHT_DECAY = 1e-2
-DROPOUT = 0.43
-LSTM_HIDDEN = 256
+HEAD_LR = 5e-5
+WEIGHT_DECAY = 2e-2
+DROPOUT = 0.45
+LSTM_HIDDEN = 192
 PATIENCE = 2
 FOCAL_GAMMA = 1.5
 MINORITY_CLASS = 0  # 0=差评，1=好评
@@ -226,7 +226,7 @@ def search_best_threshold(y_true, neg_probs, thresholds=np.arange(0.2, 0.81, 0.0
             best_metrics = metrics
     return best_th, best_metrics
 
-def freeze_encoder(encoder, freeze_embeddings=True, freeze_layers=6):
+def freeze_encoder(encoder, freeze_embeddings=True, freeze_layers=8):
     if freeze_embeddings and hasattr(encoder, "embeddings"):
         for p in encoder.embeddings.parameters():
             p.requires_grad = False
@@ -279,6 +279,7 @@ class RobertaBiLSTMAttention(nn.Module):
             bidirectional=True
         )
         self.attn = nn.Linear(lstm_hidden * 2, 1)
+        self.dropout_mid = nn.Dropout(dropout)
         self.cls = nn.Sequential(
             nn.Dropout(dropout),
             nn.Linear(lstm_hidden * 2, num_labels)
@@ -288,6 +289,7 @@ class RobertaBiLSTMAttention(nn.Module):
         out = self.encoder(input_ids=input_ids, attention_mask=attention_mask, return_dict=True)
         seq = out.last_hidden_state
         lstm_out, _ = self.lstm(seq)
+        lstm_out = self.dropout_mid(lstm_out)
         score = self.attn(lstm_out).squeeze(-1)
         score = score.masked_fill(attention_mask == 0, -1e9)
         weight = torch.softmax(score, dim=1).unsqueeze(-1)
@@ -646,7 +648,7 @@ def main():
     ).to(DEVICE)
 
     # 冻结底层，减轻过拟合
-    freeze_encoder(model.encoder, freeze_embeddings=True, freeze_layers=6)
+    freeze_encoder(model.encoder, freeze_embeddings=True, freeze_layers=8)
 
     # 类权重
     y_train = train_df[LABEL_COL].to_numpy()

@@ -542,7 +542,7 @@ def plot_aspect_wordfreq_bubble(df_pred, aspect_name, aspect_keywords, save_path
         if r >= 1.45:
             fs = 24
         elif r >= 1.15:
-            fs = 20
+            fs = 19
         elif r >= 0.9:
             fs = 16
         else:
@@ -595,10 +595,15 @@ def plot_aspect_sentiment_bar(aspect_stat, save_path):
     plt.bar(x - width / 2, aspect_stat["好评数"], width=width, label="好评数",color="#85CCCD")
     plt.bar(x + width / 2, aspect_stat["差评数"], width=width, label="差评数",color="#24B6B6")
 
-    plt.xticks(x, aspect_stat["维度"], fontproperties=CN_FONT)
-    plt.ylabel("数量",fontproperties=CN_FONT)
-    plt.legend(prop=CN_FONT)
+    plt.xticks(x, aspect_stat["维度"], fontproperties=CN_FONT,fontsize=14)
+    plt.yticks(fontsize=12)
+    plt.ylabel("数量",fontproperties=CN_FONT,fontsize=14)
+    plt.legend(prop=CN_FONT,fontsize=13)
     plt.grid(axis="y", linestyle="--", alpha=0.3)
+    ax = plt.gca()
+    for spine in ax.spines.values():
+        spine.set_visible(False)
+    ax.tick_params(left=False, bottom=False)
     plt.tight_layout()
     plt.savefig(save_path, dpi=200, bbox_inches="tight")
     plt.close()

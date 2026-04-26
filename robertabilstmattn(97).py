@@ -576,10 +576,10 @@ def plot_negative_acc_curve(history, save_path):
     val_neg_acc = [x["val_neg_acc"] for x in history]
 
     plt.figure(figsize=(8, 5))
-    plt.plot(epochs, train_neg_acc, marker="o", label="Train Negative Accuracy",color="#85CCCD")
-    plt.plot(epochs, val_neg_acc, marker="o", label="Val Negative Accuracy",color="#87B814")
+    plt.plot(epochs, train_neg_acc, marker="o", label="训练集差评识别准确率",color="#C6E6E9")
+    plt.plot(epochs, val_neg_acc, marker="o", label="验证集差评识别准确率",color="#24B6B6")
     plt.xlabel("Epoch")
-    plt.ylabel("Negative Accuracy")
+    plt.ylabel("差评召回率", fontproperties=CN_FONT)
     plt.legend()
     plt.grid(True, linestyle="--", alpha=0.4)
     plt.tight_layout()
@@ -615,7 +615,6 @@ def main():
     print("=" * 80)
     print("DEVICE:", DEVICE)
     print("=" * 80)
-
     if not Path(DATA_PATH).exists():
         raise FileNotFoundError(f"找不到数据文件: {DATA_PATH}")
 

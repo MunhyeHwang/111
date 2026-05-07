@@ -65,11 +65,13 @@ MINORITY_CLASS = 0  # 0=差评，1=好评
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 BEST_MODEL_PATH = "best_roberta_bilstm_attn.pt"
-NEG_ACC_FIG_PATH = "差评准确率变化曲线.png"
+NEG_RECALL_FIG_PATH = "差评召回率变化曲线.png"
 ASPECT_RESULT_PATH = "四维度好差评统计.xlsx"
 ASPECT_BAR_FIG_PATH = "四维度好评差评柱状图.png"
 PROF_WORDCLOUD_FIG_PATH = "专业性词频气泡图.png"
 SAFE_WORDCLOUD_FIG_PATH = "安全性词频气泡图.png"
+RESP_WORDCLOUD_FIG_PATH = "响应性词频气泡图.png"
+SERV_WORDCLOUD_FIG_PATH = "服务性词频气泡图.png"
 
 # 维度关键词（按你截图整理，可继续补充）
 ASPECT_KEYWORDS = {
@@ -199,7 +201,7 @@ def compute_metrics(y_true, y_pred):
         "minority_precision": p_c[MINORITY_CLASS],
         "minority_recall": r_c[MINORITY_CLASS],
         "minority_f1": f1_c[MINORITY_CLASS],
-        "minority_acc": r_c[MINORITY_CLASS],  # 对差评类来说，召回率就是“差评识别准确率”
+        "minority_recall_curve": r_c[MINORITY_CLASS],
         "minority_support": s_c[MINORITY_CLASS]
     }
 
@@ -570,22 +572,24 @@ def plot_aspect_wordfreq_bubble(df_pred, aspect_name, aspect_keywords, save_path
     plt.close()
     print(f"[INFO] 已保存{aspect_name}词频气泡图: {save_path}")
 
-def plot_negative_acc_curve(history, save_path):
+def plot_negative_recall_curve(history, save_path):
     epochs = [x["epoch"] for x in history]
-    train_neg_acc = [x["train_neg_acc"] for x in history]
-    val_neg_acc = [x["val_neg_acc"] for x in history]
+    train_neg_recall = [x["train_neg_recall"] for x in history]
+    val_neg_recall = [x["val_neg_recall"] for x in history]
 
     plt.figure(figsize=(8, 5))
-    plt.plot(epochs, train_neg_acc, marker="o", label="训练集差评识别准确率",color="#C6E6E9")
-    plt.plot(epochs, val_neg_acc, marker="o", label="验证集差评识别准确率",color="#24B6B6")
-    plt.xlabel("Epoch")
-    plt.ylabel("差评召回率", fontproperties=CN_FONT)
-    plt.legend()
+    plt.plot(epochs, train_neg_recall, marker="o", label="训练集差评识别召回率",color="#85CCCD")
+    plt.plot(epochs, val_neg_recall, marker="o", label="验证集差评识别召回率",color="#24B6B6")
+    plt.xlabel("Epoch",fontsize=18)
+    plt.ylabel("差评召回率", fontproperties=CN_FONT,fontsize=16)
+    plt.xticks(fontproperties=CN_FONT, fontsize=16)
+    plt.yticks(fontproperties=CN_FONT, fontsize=16)
+    plt.legend(prop=CN_FONT)
     plt.grid(True, linestyle="--", alpha=0.4)
     plt.tight_layout()
     plt.savefig(save_path, dpi=200)
     plt.close()
-    print(f"[INFO] 已保存差评Accuracy变化图: {save_path}")
+    print(f"[INFO] 已保存差评Recall变化图: {save_path}")
 
 def plot_aspect_sentiment_bar(aspect_stat, save_path):
     plt.figure(figsize=(10, 6))
@@ -595,10 +599,15 @@ def plot_aspect_sentiment_bar(aspect_stat, save_path):
     plt.bar(x - width / 2, aspect_stat["好评数"], width=width, label="好评数",color="#85CCCD")
     plt.bar(x + width / 2, aspect_stat["差评数"], width=width, label="差评数",color="#24B6B6")
 
-    plt.xticks(x, aspect_stat["维度"], fontproperties=CN_FONT,fontsize=14)
-    plt.yticks(fontsize=12)
-    plt.ylabel("数量",fontproperties=CN_FONT,fontsize=14)
-    plt.legend(prop=CN_FONT,fontsize=13)
+    plt.xticks(x, aspect_stat["维度"], fontproperties=CN_FONT,fontsize=16)
+    plt.yticks(fontsize=16)
+    plt.ylabel("数量",fontproperties=CN_FONT,fontsize=16)
+    legend_font = FontProperties(fname=font_path, size=16)
+    plt.legend(
+        prop=legend_font,
+        loc='upper right',
+        bbox_to_anchor=(1.15, 1)
+    )
     plt.grid(axis="y", linestyle="--", alpha=0.3)
     ax = plt.gca()
     for spine in ax.spines.values():
@@ -704,8 +713,8 @@ def main():
             "epoch": epoch,
             "train_loss": train_loss,
             "val_loss": val_loss,
-            "train_neg_acc": train_metrics["minority_acc"],
-            "val_neg_acc": val_metrics["minority_acc"],
+            "train_neg_recall": train_metrics["minority_recall_curve"],
+            "val_neg_recall": val_metrics["minority_recall_curve"],
             "train_macro_f1": train_metrics["macro_f1"],
             "val_macro_f1": val_metrics["macro_f1"],
             "val_minority_f1": val_metrics["minority_f1"],
@@ -713,11 +722,11 @@ def main():
         })
 
         print(f"[Train] loss={train_loss:.4f} acc={train_metrics['acc']:.4f} "
-              f"macro_f1={train_metrics['macro_f1']:.4f} neg_acc={train_metrics['minority_acc']:.4f} "
+              f"macro_f1={train_metrics['macro_f1']:.4f} neg_recall={train_metrics['minority_recall']:.4f} "
               f"neg_f1={train_metrics['minority_f1']:.4f}")
 
         print(f"[Val]   loss={val_loss:.4f} acc={val_metrics['acc']:.4f} "
-              f"macro_f1={val_metrics['macro_f1']:.4f} neg_acc={val_metrics['minority_acc']:.4f} "
+              f"macro_f1={val_metrics['macro_f1']:.4f} neg_recall={val_metrics['minority_recall']:.4f} "
               f"neg_f1={val_metrics['minority_f1']:.4f} threshold={cur_threshold:.2f}")
 
         # 以差评F1作为最佳模型标准
@@ -743,7 +752,7 @@ def main():
     # 画图
     history_df = pd.DataFrame(history)
     history_df.to_excel("training_history.xlsx", index=False)
-    plot_negative_acc_curve(history, NEG_ACC_FIG_PATH)
+    plot_negative_recall_curve(history, NEG_RECALL_FIG_PATH)
 
     print(f"\n[INFO] 最佳epoch={best_epoch}, 最佳差评F1={best_metric:.4f}, 最佳阈值={best_threshold:.2f}")
 
@@ -760,7 +769,7 @@ def main():
     print(f"Test loss      : {test_loss:.4f}")
     print(f"Test acc       : {test_metrics['acc']:.4f}")
     print(f"Test macro_f1  : {test_metrics['macro_f1']:.4f}")
-    print(f"Test neg_acc   : {test_metrics['minority_acc']:.4f}")
+    print(f"Test neg_recall   : {test_metrics['minority_recall']:.4f}")
     print(f"Test neg_f1    : {test_metrics['minority_f1']:.4f}")
     print(f"Best threshold : {best_threshold:.2f}")
     print("\n分类报告：")
@@ -788,6 +797,8 @@ def main():
     plot_aspect_sentiment_bar(aspect_stat, ASPECT_BAR_FIG_PATH)
     plot_aspect_wordfreq_bubble(full_df, "专业性", ASPECT_KEYWORDS, PROF_WORDCLOUD_FIG_PATH)
     plot_aspect_wordfreq_bubble(full_df, "安全性", ASPECT_KEYWORDS, SAFE_WORDCLOUD_FIG_PATH)
+    plot_aspect_wordfreq_bubble(full_df, "响应性", ASPECT_KEYWORDS, RESP_WORDCLOUD_FIG_PATH)
+    plot_aspect_wordfreq_bubble(full_df, "服务性", ASPECT_KEYWORDS, SERV_WORDCLOUD_FIG_PATH)
 
     # 导出
     with pd.ExcelWriter(ASPECT_RESULT_PATH, engine="openpyxl") as writer:

@@ -578,14 +578,17 @@ def plot_negative_recall_curve(history, save_path):
     val_neg_recall = [x["val_neg_recall"] for x in history]
 
     plt.figure(figsize=(8, 5))
-    plt.plot(epochs, train_neg_recall, marker="o", label="训练集差评识别召回率",color="#85CCCD")
-    plt.plot(epochs, val_neg_recall, marker="o", label="验证集差评识别召回率",color="#24B6B6")
-    plt.xlabel("Epoch",fontsize=18)
+    plt.plot(epochs, train_neg_recall, marker="o", label="训练集差评召回率",color="#85CCCD")
+    plt.plot(epochs, val_neg_recall, marker="o", label="验证集差评召回率",color="#24B6B6")
+    plt.xlabel("训练轮次",fontproperties=CN_FONT,fontsize=16)
     plt.ylabel("差评召回率", fontproperties=CN_FONT,fontsize=16)
     plt.xticks(fontproperties=CN_FONT, fontsize=16)
     plt.yticks(fontproperties=CN_FONT, fontsize=16)
-    plt.legend(prop=CN_FONT)
+    plt.legend(prop=CN_FONT,frameon=False,fontsize=16)
     plt.grid(True, linestyle="--", alpha=0.4)
+    ax = plt.gca()
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
     plt.tight_layout()
     plt.savefig(save_path, dpi=200)
     plt.close()
@@ -606,7 +609,8 @@ def plot_aspect_sentiment_bar(aspect_stat, save_path):
     plt.legend(
         prop=legend_font,
         loc='upper right',
-        bbox_to_anchor=(1.15, 1)
+        bbox_to_anchor=(1.15, 1),
+        frameon = False
     )
     plt.grid(axis="y", linestyle="--", alpha=0.3)
     ax = plt.gca()

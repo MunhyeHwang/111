@@ -14,6 +14,7 @@ import re
 import random
 import warnings
 from pathlib import Path
+import gc
 
 import numpy as np
 import pandas as pd
@@ -34,6 +35,7 @@ import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
 from matplotlib.font_manager import FontProperties
 import os
+import gc
 
 # 手动加载中文字体
 font_path = "./simhei.ttf"
@@ -43,9 +45,13 @@ print(f"[INFO] 已加载字体: {font_path}")
 
 warnings.filterwarnings("ignore")
 
+# 避免 transformers 在加载模型时自动访问 HuggingFace discussion/safetensors 转换接口导致 403
+os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+
 # 1. 配置
 SEED = 42
-MODEL_NAME = "hfl/chinese-roberta-wwm-ext"
+MODEL_NAME = "./chinese-roberta-wwm-ext"
 DATA_PATH = "huizong_cleaned.csv"
 TEXT_COL = "评论"
 LABEL_COL = "lable"
@@ -67,6 +73,7 @@ DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 BEST_MODEL_PATH = "best_roberta_bilstm_attn.pt"
 NEG_RECALL_FIG_PATH = "差评召回率变化曲线.png"
 ASPECT_RESULT_PATH = "四维度好差评统计.xlsx"
+ABLATION_RESULT_PATH = "消融实验结果.xlsx"
 ASPECT_BAR_FIG_PATH = "四维度好评差评柱状图.png"
 PROF_WORDCLOUD_FIG_PATH = "专业性词频气泡图.png"
 SAFE_WORDCLOUD_FIG_PATH = "安全性词频气泡图.png"
@@ -198,9 +205,9 @@ def compute_metrics(y_true, y_pred):
         "weighted_f1": f1_w,
         "macro_f1": f1_m,
         "minority_precision": p_c[MINORITY_CLASS],
-        "minority_recall": r_c[MINORITY_CLASS],
         "minority_f1": f1_c[MINORITY_CLASS],
         "minority_recall_curve": r_c[MINORITY_CLASS],
+        "minority_recall": r_c[MINORITY_CLASS],
         "minority_support": s_c[MINORITY_CLASS]
     }
 
@@ -267,8 +274,7 @@ class RobertaBiLSTMAttention(nn.Module):
         super().__init__()
         self.encoder = AutoModel.from_pretrained(
             model_name,
-            force_download=True,
-            use_safetensors=False
+            local_files_only=True
         )
         hidden_size = self.encoder.config.hidden_size
 
@@ -300,7 +306,7 @@ class RobertaBiLSTMAttention(nn.Module):
 class RobertaBiLSTM(nn.Module):
     def __init__(self, model_name, num_labels=2, lstm_hidden=256, dropout=0.4):
         super().__init__()
-        self.encoder = AutoModel.from_pretrained(model_name, force_download=True, use_safetensors=False)
+        self.encoder = AutoModel.from_pretrained(model_name,local_files_only=True)
         hidden_size = self.encoder.config.hidden_size
 
         self.lstm = nn.LSTM(
@@ -325,7 +331,7 @@ class RobertaBiLSTM(nn.Module):
 class RobertaAttention(nn.Module):
     def __init__(self, model_name, num_labels=2, dropout=0.4):
         super().__init__()
-        self.encoder = AutoModel.from_pretrained(model_name, force_download=True, use_safetensors=False)
+        self.encoder = AutoModel.from_pretrained(model_name,local_files_only=True)
         hidden_size = self.encoder.config.hidden_size
 
         self.attn = nn.Linear(hidden_size, 1)
@@ -408,6 +414,208 @@ def evaluate(model, loader, loss_fn, threshold=0.5, return_probs=False):
     if return_probs:
         return total_loss / len(loader.dataset), metrics, y_true, y_pred, neg_probs
     return total_loss / len(loader.dataset), metrics, y_true, y_pred
+
+def train_and_evaluate_model(
+        model,
+        model_name,
+        train_loader,
+        val_loader,
+        test_loader,
+        loss_fn):
+
+    print(f"\n{'=' * 80}")
+    print(f"开始训练模型: {model_name}")
+    print(f"{'=' * 80}")
+
+    freeze_encoder(model.encoder, freeze_embeddings=True, freeze_layers=6)
+
+    encoder_params, head_params = [], []
+
+    for name, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+
+        if name.startswith("encoder."):
+            encoder_params.append(p)
+        else:
+            head_params.append(p)
+
+    optimizer = torch.optim.AdamW(
+        [
+            {
+                "params": encoder_params,
+                "lr": ENCODER_LR,
+                "weight_decay": WEIGHT_DECAY
+            },
+            {
+                "params": head_params,
+                "lr": HEAD_LR,
+                "weight_decay": WEIGHT_DECAY
+            },
+        ]
+    )
+
+    total_steps = len(train_loader) * EPOCHS
+
+    scheduler = get_linear_schedule_with_warmup(
+        optimizer,
+        num_warmup_steps=max(1, int(0.1 * total_steps)),
+        num_training_steps=total_steps
+    )
+
+    history = []
+
+    best_metric = -1
+    best_epoch = 0
+    best_threshold = 0.5
+    patience_count = 0
+
+    safe_model_name = re.sub(r"[^0-9A-Za-z_-]+", "_", model_name)
+    save_path = f"best_{safe_model_name}.pt"
+
+    # 开始训练
+    for epoch in range(1, EPOCHS + 1):
+
+        print(f"\n{'=' * 80}")
+        print(f"Epoch {epoch}/{EPOCHS}")
+        print(f"{'=' * 80}")
+
+        train_loss, train_metrics = train_one_epoch(
+            model,
+            train_loader,
+            optimizer,
+            scheduler,
+            loss_fn
+        )
+
+        val_loss, _, val_y, _, val_neg_probs = evaluate(
+            model,
+            val_loader,
+            loss_fn,
+            threshold=0.5,
+            return_probs=True
+        )
+
+        cur_threshold, val_metrics = search_best_threshold(
+            val_y,
+            val_neg_probs
+        )
+
+        history.append({
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "val_loss": val_loss,
+            "train_neg_recall": train_metrics["minority_recall_curve"],
+            "val_neg_recall": val_metrics["minority_recall_curve"],
+            "train_macro_f1": train_metrics["macro_f1"],
+            "val_macro_f1": val_metrics["macro_f1"],
+            "val_minority_f1": val_metrics["minority_f1"],
+            "best_threshold": cur_threshold
+        })
+
+        print(
+            f"[Train] loss={train_loss:.4f} "
+            f"acc={train_metrics['acc']:.4f} "
+            f"macro_f1={train_metrics['macro_f1']:.4f} "
+            f"neg_recall={train_metrics['minority_recall']:.4f} "
+            f"neg_f1={train_metrics['minority_f1']:.4f}"
+        )
+
+        print(
+            f"[Val]   loss={val_loss:.4f} "
+            f"acc={val_metrics['acc']:.4f} "
+            f"macro_f1={val_metrics['macro_f1']:.4f} "
+            f"neg_recall={val_metrics['minority_recall']:.4f} "
+            f"neg_f1={val_metrics['minority_f1']:.4f} "
+            f"threshold={cur_threshold:.2f}"
+        )
+
+        # 保存最佳模型
+        if val_metrics["minority_f1"] > best_metric:
+
+            best_metric = val_metrics["minority_f1"]
+            best_epoch = epoch
+            best_threshold = cur_threshold
+            patience_count = 0
+
+            torch.save({
+                "model_state_dict": model.state_dict(),
+                "threshold": best_threshold
+            }, save_path)
+
+            print(f"[INFO] 已保存最佳模型: {save_path}")
+
+        else:
+            patience_count += 1
+
+            print(
+                f"[INFO] 差评F1未提升 "
+                f"patience={patience_count}/{PATIENCE}"
+            )
+
+        # 提前停止
+        if patience_count >= PATIENCE:
+            print("[INFO] 提前停止")
+            break
+
+    # 加载最佳模型
+    ckpt = torch.load(save_path, map_location=DEVICE)
+
+    model.load_state_dict(ckpt["model_state_dict"])
+
+    best_threshold = ckpt["threshold"]
+
+    print(
+        f"\n[INFO] 最佳epoch={best_epoch}, "
+        f"最佳差评F1={best_metric:.4f}, "
+        f"最佳阈值={best_threshold:.2f}"
+    )
+
+    # 测试集评估
+    test_loss, test_metrics, y_true, y_pred = evaluate(
+        model,
+        test_loader,
+        loss_fn,
+        threshold=best_threshold,
+        return_probs=False
+    )
+
+    print(f"\n{'=' * 80}")
+    print("测试集结果")
+    print(f"{'=' * 80}")
+
+    print(f"Test loss      : {test_loss:.4f}")
+    print(f"Test acc       : {test_metrics['acc']:.4f}")
+    print(f"Test macro_f1  : {test_metrics['macro_f1']:.4f}")
+    print(f"Test neg_recall: {test_metrics['minority_recall']:.4f}")
+    print(f"Test neg_f1    : {test_metrics['minority_f1']:.4f}")
+    print(f"Best threshold : {best_threshold:.2f}")
+
+    print("\n分类报告：")
+    print(classification_report(
+        y_true,
+        y_pred,
+        digits=4,
+        zero_division=0
+    ))
+
+    print("混淆矩阵：")
+    print(confusion_matrix(
+        y_true,
+        y_pred,
+        labels=[0, 1]
+    ))
+
+    result_dict = {
+        "模型": model_name,
+        "Accuracy": round(test_metrics["acc"], 4),
+        "Weighted_F1": round(test_metrics["weighted_f1"], 4),
+        "Macro_F1": round(test_metrics["macro_f1"], 4),
+        "差评Recall": round(test_metrics["minority_recall"], 4),
+        "差评F1": round(test_metrics["minority_f1"], 4)
+    }
+
+    return result_dict, history, best_threshold, model
 
 # 7. 维度匹配与全量预测
 def match_aspects(text, aspect_keywords):
@@ -535,6 +743,10 @@ def packed_bubble_positions(radii, padding=0.08, max_iter=1200):
 
 def plot_aspect_wordfreq_bubble(df_pred, aspect_name, aspect_keywords, save_path, topn=15):
     word_stat = build_aspect_word_stat(df_pred, aspect_name, aspect_keywords, topn=topn)
+
+    if word_stat.empty:
+        print(f"[WARN] {aspect_name} 没有命中关键词，跳过气泡图: {save_path}")
+        return
 
     labels = word_stat.index.tolist()
     values = word_stat.values.astype(float)
@@ -683,7 +895,7 @@ def main():
 
     train_df, val_df, test_df = grouped_split(df, random_state=SEED)
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True, force_download=True)
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME,use_fast=False,local_files_only=True)
 
     train_ds = ReviewDataset(train_df[TEXT_COL], train_df[LABEL_COL], tokenizer, MAX_LEN)
     val_ds = ReviewDataset(val_df[TEXT_COL], val_df[LABEL_COL], tokenizer, MAX_LEN)
@@ -703,12 +915,17 @@ def main():
     class_weights = torch.tensor(class_weights, dtype=torch.float).to(DEVICE)
     loss_fn = FocalLoss(alpha=class_weights, gamma=FOCAL_GAMMA)
 
-    # 实例化三个模型进行消融对比
+    # 三个模型按顺序创建和训练，避免一次性把三个 RoBERTa 放进显存导致卡死/中断
     models_to_test = {
-        "RoBERTa-BiLSTM-Attention": RobertaBiLSTMAttention(MODEL_NAME, num_labels=2, lstm_hidden=LSTM_HIDDEN,
-                                                           dropout=DROPOUT).to(DEVICE),
-        "RoBERTa-BiLSTM": RobertaBiLSTM(MODEL_NAME, num_labels=2, lstm_hidden=LSTM_HIDDEN, dropout=DROPOUT).to(DEVICE),
-        "RoBERTa-Attention": RobertaAttention(MODEL_NAME, num_labels=2, dropout=DROPOUT).to(DEVICE)
+        "RoBERTa-BiLSTM-Attention": lambda: RobertaBiLSTMAttention(
+            MODEL_NAME, num_labels=2, lstm_hidden=LSTM_HIDDEN, dropout=DROPOUT
+        ).to(DEVICE),
+        "RoBERTa-BiLSTM": lambda: RobertaBiLSTM(
+            MODEL_NAME, num_labels=2, lstm_hidden=LSTM_HIDDEN, dropout=DROPOUT
+        ).to(DEVICE),
+        "RoBERTa-Attention": lambda: RobertaAttention(
+            MODEL_NAME, num_labels=2, dropout=DROPOUT
+        ).to(DEVICE),
     }
 
     ablation_results = []
@@ -717,17 +934,39 @@ def main():
     best_base_threshold = 0.5
 
     # 循环训练所有模型
-    for model_name, model_instance in models_to_test.items():
+    for model_name, model_factory in models_to_test.items():
+
+        # 训练前清理显存
+        gc.collect()
+
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+
+        model_instance = model_factory()
+
         result_dict, history, best_thresh, trained_model = train_and_evaluate_model(
-            model_instance, model_name, train_loader, val_loader, test_loader, loss_fn
+            model_instance,
+            model_name,
+            train_loader,
+            val_loader,
+            test_loader,
+            loss_fn
         )
         ablation_results.append(result_dict)
 
-        # 记录主模型，用于后续的画图和预测
+        # 主模型保留
         if model_name == "RoBERTa-BiLSTM-Attention":
             base_model_history = history
             best_base_model = trained_model
             best_base_threshold = best_thresh
+
+        # 消融模型训练完立刻释放
+        else:
+            del trained_model
+            del model_instance
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
     # 保存消融实验结果
     ablation_df = pd.DataFrame(ablation_results)

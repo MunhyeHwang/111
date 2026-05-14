@@ -38,9 +38,9 @@ import os
 import gc
 
 # 手动加载中文字体
-font_path = "./simhei.ttf"
+font_path = "./Simsun.ttf"
 CN_FONT = FontProperties(fname=font_path)
-plt.rcParams["axes.unicode_minus"] = False
+plt.rcParams['font.family'] = 'Times New Roman'
 print(f"[INFO] 已加载字体: {font_path}")
 
 warnings.filterwarnings("ignore")
@@ -75,10 +75,10 @@ NEG_RECALL_FIG_PATH = "差评召回率变化曲线.png"
 ASPECT_RESULT_PATH = "四维度好差评统计.xlsx"
 ABLATION_RESULT_PATH = "消融实验结果.xlsx"
 ASPECT_BAR_FIG_PATH = "四维度好评差评柱状图.png"
-PROF_WORDCLOUD_FIG_PATH = "专业性维度正负向高频词双向柱状图.png"
-SAFE_WORDCLOUD_FIG_PATH = "安全性维度正负向高频词双向柱状图.png"
-RESP_WORDCLOUD_FIG_PATH = "响应性维度正负向高频词双向柱状图.png"
-SERV_WORDCLOUD_FIG_PATH = "服务性维度正负向高频词双向柱状图.png"
+PROF_WORDCLOUD_FIG_PATH = "专业性维度正负向评论高频特征词分布图.png"
+SAFE_WORDCLOUD_FIG_PATH = "安全性维度正负向评论高频特征词分布图.png"
+RESP_WORDCLOUD_FIG_PATH = "响应性维度正负向评论高频特征词分布图.png"
+SERV_WORDCLOUD_FIG_PATH = "服务性维度正负向评论高频特征词分布图.png"
 
 # 维度关键词（按你截图整理，可继续补充）
 ASPECT_KEYWORDS = {
@@ -777,20 +777,25 @@ def plot_aspect_wordfreq_bars(df_pred, aspect_name, aspect_keywords, save_path, 
     pos_values = [pos_series.get(w, 0) for w in all_words]
     neg_values = [-neg_series.get(w, 0) for w in all_words]  # 负值用于左侧
 
+    # 对数化处理（加1避免 log(0)）
+    pos_values_log = np.log1p(pos_values)
+    neg_values_log = -np.log1p(np.abs(neg_values)) # 保持负向柱状
+
     y_pos = np.arange(len(all_words))
 
     plt.figure(figsize=(10, max(5, len(all_words)*0.4)))
-    plt.barh(y_pos, pos_values, color="#85CCCD", label="好评词频")
-    plt.barh(y_pos, neg_values, color="#24B6B6", label="差评词频")
-    plt.yticks(y_pos, all_words, fontproperties=CN_FONT, fontsize=14)
-    plt.xlabel("词频", fontproperties=CN_FONT, fontsize=14)
-    plt.title(f"{aspect_name}正负向高频词", fontproperties=CN_FONT, fontsize=16)
-    plt.legend(prop=CN_FONT)
+    ax.barh(y, pos_values_log, color='#8dd3c7', label='好评词频')
+    ax.barh(y, neg_values_log, color='#2bb3b1', label='差评词频')
+    ax.axvline(0, color='gray', linewidth=1)
+    plt.yticks(y_pos, all_words, fontproperties=CN_FONT, fontsize=18)
+    plt.xlabel("对数词频", fontproperties=CN_FONT, fontsize=18)
+    plt.ylabel("关键词", fontproperties=CN_FONT, fontsize=18)
+    plt.legend(prop=CN_FONT, frameon=False)
     plt.grid(axis="x", linestyle="--", alpha=0.3)
 
     ax = plt.gca()
     for spine in ax.spines.values():
-        spine.set_visible(False)
+        spine.set_visible(True)
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches="tight", facecolor="white")
     plt.close()

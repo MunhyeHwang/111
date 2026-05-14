@@ -75,10 +75,10 @@ NEG_RECALL_FIG_PATH = "差评召回率变化曲线.png"
 ASPECT_RESULT_PATH = "四维度好差评统计.xlsx"
 ABLATION_RESULT_PATH = "消融实验结果.xlsx"
 ASPECT_BAR_FIG_PATH = "四维度好评差评柱状图.png"
-PROF_WORDCLOUD_FIG_PATH = "专业性词频气泡图.png"
-SAFE_WORDCLOUD_FIG_PATH = "安全性词频气泡图.png"
-RESP_WORDCLOUD_FIG_PATH = "响应性词频气泡图.png"
-SERV_WORDCLOUD_FIG_PATH = "服务性词频气泡图.png"
+PROF_WORDCLOUD_FIG_PATH = "专业性维度正负向高频词双向柱状图.png"
+SAFE_WORDCLOUD_FIG_PATH = "安全性维度正负向高频词双向柱状图.png"
+RESP_WORDCLOUD_FIG_PATH = "响应性维度正负向高频词双向柱状图.png"
+SERV_WORDCLOUD_FIG_PATH = "服务性维度正负向高频词双向柱状图.png"
 
 # 维度关键词（按你截图整理，可继续补充）
 ASPECT_KEYWORDS = {
@@ -741,94 +741,60 @@ def packed_bubble_positions(radii, padding=0.08, max_iter=1200):
 
     return placed
 
-def plot_aspect_wordfreq_bubble(df_pred, aspect_name, aspect_keywords, save_path, topn=15):
-    word_stat = build_aspect_word_stat(df_pred, aspect_name, aspect_keywords, topn=topn)
+# 正负向高频词双向柱状图
+def build_aspect_word_stat_sentiment(df_pred, aspect_name, aspect_keywords, topn=15):
 
-    if word_stat.empty:
-        print(f"[WARN] {aspect_name} 没有命中关键词，跳过气泡图: {save_path}")
+    df_aspect = df_pred[
+        df_pred[TEXT_COL].apply(lambda x: aspect_name in match_aspects(x, ASPECT_KEYWORDS))
+    ]
+    pos_words, neg_words = [], []
+
+    for _, row in df_aspect.iterrows():
+        text = row[TEXT_COL]
+        pred = row["pred_label"]
+        for kw in aspect_keywords[aspect_name]:
+            cnt = text.count(kw)
+            if cnt > 0:
+                if pred == 1:
+                    pos_words.extend([kw] * cnt)
+                else:
+                    neg_words.extend([kw] * cnt)
+
+    pos_series = pd.Series(pos_words).value_counts().head(topn)
+    neg_series = pd.Series(neg_words).value_counts().head(topn)
+
+    return pos_series, neg_series
+
+def plot_aspect_wordfreq_bars(df_pred, aspect_name, aspect_keywords, save_path, topn=15):
+    pos_series, neg_series = build_aspect_word_stat_sentiment(df_pred, aspect_name, aspect_keywords, topn=topn)
+
+    if pos_series.empty and neg_series.empty:
+        print(f"[WARN] {aspect_name} 没有命中关键词，跳过双向柱状图: {save_path}")
         return
 
-    labels = word_stat.index.tolist()
-    values = word_stat.values.astype(float)
+    # 合并词列表，保证柱状对齐
+    all_words = list(set(pos_series.index.tolist() + neg_series.index.tolist()))
+    pos_values = [pos_series.get(w, 0) for w in all_words]
+    neg_values = [-neg_series.get(w, 0) for w in all_words]  # 负值用于左侧
 
-    order = np.argsort(values)[::-1]
-    labels = [labels[i] for i in order]
-    values = values[order]
+    y_pos = np.arange(len(all_words))
 
-    radii = np.sqrt(values)
-    radii = radii / radii.max() * 2.2 + 0.4
-    circles = packed_bubble_positions(radii, padding=0.10, max_iter=2000)
+    plt.figure(figsize=(10, max(5, len(all_words)*0.4)))
+    plt.barh(y_pos, pos_values, color="#85CCCD", label="好评词频")
+    plt.barh(y_pos, neg_values, color="#24B6B6", label="差评词频")
+    plt.yticks(y_pos, all_words, fontproperties=CN_FONT, fontsize=14)
+    plt.xlabel("词频", fontproperties=CN_FONT, fontsize=14)
+    plt.title(f"{aspect_name}正负向高频词", fontproperties=CN_FONT, fontsize=16)
+    plt.legend(prop=CN_FONT)
+    plt.grid(axis="x", linestyle="--", alpha=0.3)
 
-    fig, ax = plt.subplots(figsize=(14, 6))
-    ax.set_aspect("equal")
-    ax.axis("off")
-    def get_color_by_radius(r):
-        """根据气泡半径返回对应颜色"""
-        if r >= 1.45:
-            face = "#24B6B6"
-            edge = "#1A8A8A"
-            text = "#FFFFFF"
-        elif r >= 1.15:
-            face = "#6BCACA"
-            edge = "#4DA8A8"
-            text = "#FFFFFF"
-        elif r >= 0.9:
-            face = "#A8E0E0"
-            edge = "#85CCCD"
-            text = "#1A6B6B"
-        else:
-            face = "#E8F5F5"
-            edge = "#B8D8D8"
-            text = "#2E8B8B"
-        return face, edge, text
-
-    for (x, y, r), word, freq in zip(circles, labels, values):
-        face_color, edge_color, text_color = get_color_by_radius(r)
-
-        # 光晕效果
-        halo = plt.Circle((x, y), r * 1.12, color=edge_color, alpha=0.08, lw=0)
-        ax.add_patch(halo)
-
-        # 气泡本体
-        bubble = plt.Circle(
-            (x, y), r,
-            facecolor=face_color,
-            edgecolor=edge_color,
-            linewidth=1.5,
-            alpha=0.9
-        )
-        ax.add_patch(bubble)
-
-        if r >= 1.45:
-            fs = 24
-        elif r >= 1.15:
-            fs = 19
-        elif r >= 0.9:
-            fs = 16
-        else:
-            fs = 13
-
-        show_word = word if len(word) <= 6 else word[:6] + "…"
-
-        ax.text(
-            x, y, show_word,
-            ha="center", va="center",
-            fontsize=fs, color=text_color, weight="bold",
-            fontproperties = CN_FONT
-        )
-
-    xmin = min(x - r for (x, y, r) in circles) - 0.4
-    xmax = max(x + r for (x, y, r) in circles) + 0.4
-    ymin = min(y - r for (x, y, r) in circles) - 0.4
-    ymax = max(y + r for (x, y, r) in circles) + 0.4
-
-    ax.set_xlim(xmin, xmax)
-    ax.set_ylim(ymin, ymax)
-
+    ax = plt.gca()
+    for spine in ax.spines.values():
+        spine.set_visible(False)
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches="tight", facecolor="white")
     plt.close()
-    print(f"[INFO] 已保存{aspect_name}词频气泡图: {save_path}")
+    print(f"[INFO] 已保存{aspect_name}正负向高频词柱状图: {save_path}")
 
 def plot_negative_recall_curve(history, save_path):
     epochs = [x["epoch"] for x in history]
@@ -992,10 +958,10 @@ def main():
 
     aspect_stat = build_aspect_table(full_df, ASPECT_KEYWORDS)
     plot_aspect_sentiment_bar(aspect_stat, ASPECT_BAR_FIG_PATH)
-    plot_aspect_wordfreq_bubble(full_df, "专业性", ASPECT_KEYWORDS, PROF_WORDCLOUD_FIG_PATH)
-    plot_aspect_wordfreq_bubble(full_df, "安全性", ASPECT_KEYWORDS, SAFE_WORDCLOUD_FIG_PATH)
-    plot_aspect_wordfreq_bubble(full_df, "响应性", ASPECT_KEYWORDS, RESP_WORDCLOUD_FIG_PATH)
-    plot_aspect_wordfreq_bubble(full_df, "服务性", ASPECT_KEYWORDS, SERV_WORDCLOUD_FIG_PATH)
+    plot_aspect_wordfreq_bars(full_df, "安全性", ASPECT_KEYWORDS, SAFE_WORDCLOUD_FIG_PATH)
+    plot_aspect_wordfreq_bars(full_df, "专业性", ASPECT_KEYWORDS, PROF_WORDCLOUD_FIG_PATH)
+    plot_aspect_wordfreq_bars(full_df, "响应性", ASPECT_KEYWORDS, RESP_WORDCLOUD_FIG_PATH)
+    plot_aspect_wordfreq_bars(full_df, "服务性", ASPECT_KEYWORDS, SERV_WORDCLOUD_FIG_PATH)
 
     history_df = pd.DataFrame(base_model_history)
     with pd.ExcelWriter(ASPECT_RESULT_PATH, engine="openpyxl") as writer:

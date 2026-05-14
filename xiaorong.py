@@ -38,9 +38,8 @@ import os
 import gc
 
 # 手动加载中文字体
-font_path = "./Simsun.ttf"
+font_path = "./simsunb.ttf"
 CN_FONT = FontProperties(fname=font_path)
-plt.rcParams['font.family'] = 'Times New Roman'
 print(f"[INFO] 已加载字体: {font_path}")
 
 warnings.filterwarnings("ignore")
@@ -779,23 +778,36 @@ def plot_aspect_wordfreq_bars(df_pred, aspect_name, aspect_keywords, save_path, 
 
     # 对数化处理（加1避免 log(0)）
     pos_values_log = np.log1p(pos_values)
-    neg_values_log = -np.log1p(np.abs(neg_values)) # 保持负向柱状
+    neg_values_log = -np.log1p(np.abs(neg_values))  # 保持负向柱状
 
     y_pos = np.arange(len(all_words))
 
-    plt.figure(figsize=(10, max(5, len(all_words)*0.4)))
-    ax.barh(y, pos_values_log, color='#8dd3c7', label='好评词频')
-    ax.barh(y, neg_values_log, color='#2bb3b1', label='差评词频')
-    ax.axvline(0, color='gray', linewidth=1)
-    plt.yticks(y_pos, all_words, fontproperties=CN_FONT, fontsize=18)
-    plt.xlabel("对数词频", fontproperties=CN_FONT, fontsize=18)
-    plt.ylabel("关键词", fontproperties=CN_FONT, fontsize=18)
-    plt.legend(prop=CN_FONT, frameon=False)
-    plt.grid(axis="x", linestyle="--", alpha=0.3)
+    fig, ax = plt.subplots(figsize=(10, max(5, len(all_words) * 0.4)))
 
-    ax = plt.gca()
-    for spine in ax.spines.values():
-        spine.set_visible(True)
+    ax.barh(y_pos, pos_values_log, color="#85CCCD", label='好评词频')
+    ax.barh(y_pos, neg_values_log, color="#24B6B6", label='差评词频')
+    ax.axvline(0, color='gray', linewidth=1)
+
+    # 纵坐标显示关键词
+    ax.set_yticks(y_pos)
+    ax.set_yticklabels(all_words, fontproperties=CN_FONT, fontsize=18)
+    # 横纵坐标轴标签
+    ax.set_xlabel("对数词频", fontproperties=CN_FONT, fontsize=18)
+    ax.set_ylabel("关键词", fontproperties=CN_FONT, fontsize=18)
+
+    # 图例无框
+    ax.legend(prop=CN_FONT, frameon=False)
+
+    # 横向网格线
+    ax.grid(axis="x", linestyle="--", alpha=0.3)
+
+    # 去掉上边框和右边框
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    # 保留下边框和左边框
+    ax.spines['left'].set_visible(True)
+    ax.spines['bottom'].set_visible(True)
+
     plt.tight_layout()
     plt.savefig(save_path, dpi=300, bbox_inches="tight", facecolor="white")
     plt.close()

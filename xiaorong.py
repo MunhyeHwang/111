@@ -798,10 +798,10 @@ def plot_aspect_wordfreq_bars(df_pred, aspect_name, aspect_keywords, save_path, 
     ax.barh(y_pos, pos_values_log, color="#85CCCD", label='好评词频')
     ax.barh(y_pos, neg_values_log, color="#24B6B6", label='差评词频')
 
-    plt.yticks(y_pos, all_words, fontproperties=CN_FONT, fontsize=18)
-    plt.xlabel("对数词频", fontproperties=CN_FONT, fontsize=18)
-    plt.ylabel("关键词", fontproperties=CN_FONT, fontsize=18)
-    plt.legend(prop=CN_FONT,frameon=False)
+    plt.yticks(y_pos, all_words, fontproperties=CN_FONT, fontsize=16)
+    plt.xlabel("对数词频", fontproperties=CN_FONT, fontsize=16)
+    plt.xticks(fontproperties=CN_FONT, fontsize=16)
+    plt.legend(prop=FontProperties(fname=font_path, size=16),frameon=False,loc='upper left',bbox_to_anchor=(1.01, 1))
     plt.grid(axis="x", linestyle="--", alpha=0.3)
 
     # 去掉上边框和右边框

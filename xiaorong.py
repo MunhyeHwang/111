@@ -33,14 +33,25 @@ from tqdm.auto import tqdm
 
 import matplotlib.font_manager as fm
 import matplotlib.pyplot as plt
+import matplotlib
 from matplotlib.font_manager import FontProperties
 import os
 import gc
 
-# 手动加载中文字体
-font_path = "./simsunb.ttf"
+# 强制刷新字体缓存
+matplotlib.font_manager._load_fontmanager(try_read_cache=False)
+# 字体路径
+font_path = os.path.join(os.path.dirname(__file__), "simhei.ttf")
+# 注册字体
+fm.fontManager.addfont(font_path)
+# 获取字体名称
+prop = fm.FontProperties(fname=font_path)
+font_name = prop.get_name()
+# 全局设置
+matplotlib.rcParams['font.family'] = font_name
+matplotlib.rcParams['axes.unicode_minus'] = False
 CN_FONT = FontProperties(fname=font_path)
-print(f"[INFO] 已加载字体: {font_path}")
+print(f"[INFO] 当前字体名称: {font_name}")
 
 warnings.filterwarnings("ignore")
 
@@ -786,20 +797,12 @@ def plot_aspect_wordfreq_bars(df_pred, aspect_name, aspect_keywords, save_path, 
 
     ax.barh(y_pos, pos_values_log, color="#85CCCD", label='好评词频')
     ax.barh(y_pos, neg_values_log, color="#24B6B6", label='差评词频')
-    ax.axvline(0, color='gray', linewidth=1)
 
-    # 纵坐标显示关键词
-    ax.set_yticks(y_pos)
-    ax.set_yticklabels(all_words, fontproperties=CN_FONT, fontsize=18)
-    # 横纵坐标轴标签
-    ax.set_xlabel("对数词频", fontproperties=CN_FONT, fontsize=18)
-    ax.set_ylabel("关键词", fontproperties=CN_FONT, fontsize=18)
-
-    # 图例无框
-    ax.legend(prop=CN_FONT, frameon=False)
-
-    # 横向网格线
-    ax.grid(axis="x", linestyle="--", alpha=0.3)
+    plt.yticks(y_pos, all_words, fontproperties=CN_FONT, fontsize=18)
+    plt.xlabel("对数词频", fontproperties=CN_FONT, fontsize=18)
+    plt.ylabel("关键词", fontproperties=CN_FONT, fontsize=18)
+    plt.legend(prop=CN_FONT,frameon=False)
+    plt.grid(axis="x", linestyle="--", alpha=0.3)
 
     # 去掉上边框和右边框
     ax.spines['top'].set_visible(False)
@@ -848,7 +851,7 @@ def plot_aspect_sentiment_bar(aspect_stat, save_path):
     plt.ylabel("数量",fontproperties=CN_FONT,fontsize=16)
     legend_font = FontProperties(fname=font_path, size=16)
     plt.legend(
-        prop=legend_font,
+        prop=CN_FONT,
         loc='upper right',
         bbox_to_anchor=(1.15, 1),
         frameon = False
